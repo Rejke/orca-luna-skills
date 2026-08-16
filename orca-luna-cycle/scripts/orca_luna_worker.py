@@ -316,16 +316,22 @@ def render_prompt(worker: dict[str, Any], envelope: dict[str, Any], mode: str) -
             "implementation depth, reinvention, wrapper/comment slop, and wasted work."
         )
     parts.append(
-        "REPORT\nFollow Orca's injected lifecycle command exactly. Send exactly one "
-        "worker_done, only when the job is finished — never a probe, test, or partial "
-        "completion, because the first accepted completion becomes your report of "
-        "record. Never put the report into a status or question message; only the "
-        "single worker_done --payload is validated. Copy lifecycle IDs verbatim from "
+        "REPORT\nFollow Orca's injected lifecycle command exactly. Exactly one accepted "
+        "worker_done completes the task: send it only when the job is finished — never "
+        "a probe, test, or partial completion, because the first accepted completion "
+        "becomes your report of record. If the CLI rejects the send before recording "
+        "it, correct the command from the error message and resend once; the error "
+        "plus --help is the complete contract — never investigate CLI internals, "
+        "wrappers, or binaries. Never put the report into a status or question "
+        "message; only the single worker_done --payload is validated. Put the entire "
+        "report inside that one --payload and do not combine it with structured "
+        "payload flags such as --files-modified, --report-path, or --outcome — they "
+        "are mutually exclusive with raw payload. Copy lifecycle IDs verbatim from "
         "the injected command; never retype or reconstruct them. Keep --body to exactly "
-        "three concise executive-summary sentences. Add one --payload argument containing "
-        "compact JSON matching this contract (material evidence only, <=3000 chars). "
-        "Replace every <...> placeholder; use an empty array when that category has no "
-        "material items:\n" + compact_json(report_example(role))
+        "three concise executive-summary sentences. The --payload is compact JSON "
+        "matching this contract (material evidence only, <=3000 chars). Replace every "
+        "<...> placeholder; use an empty array when that category has no material "
+        "items:\n" + compact_json(report_example(role))
     )
     if role in {"reviewer", "antislop"}:
         parts.append(

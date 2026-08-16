@@ -226,7 +226,11 @@ means the assigned job completed; a reviewer may still report verdict `FAIL`, `U
 or `BLOCKED`.
 
 Workers use Orca's already-injected opaque lifecycle command/IDs and add only a compact
-`--payload` report. Do not paste or reconstruct Task/Dispatch IDs in task prose. A
+`--payload` report; the whole report travels in that single `--payload`, which is
+mutually exclusive with structured payload flags like `--files-modified`. "Exactly one
+completion" counts accepted completions: a send the CLI rejects with no effects is
+corrected from the error message and resent once, never investigated through CLI
+internals. Do not paste or reconstruct Task/Dispatch IDs in task prose. A
 terminal-authority `worker-done` shorthand belongs in Orca itself, not this skill.
 
 For a question, escalation, rejected completion, invalid report, failed release, failed
