@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 2,
+  "mode": "audit",
+  "objective": "Audit the current implementation against the accepted plan without modifying files.",
+  "envelope": {
+    "goal": "Produce an evidenced implementation gap map.",
+    "nonGoals": ["Do not implement fixes."],
+    "acceptanceCriteria": {
+      "AC1": "Every plan requirement is mapped to repository evidence.",
+      "AC2": "The result identifies explicit unknowns and next validation steps."
+    },
+    "constraints": ["Do not mutate repository files or services."],
+    "baseAnchor": "0123456789abcdef",
+    "dirtyState": ["?? docs/"],
+    "integrationDestination": "current worktree",
+    "repairBudget": 0
+  },
+  "defaults": {
+    "worktree": "current",
+    "mutation": "forbidden",
+    "checks": ["Confirm repository status is unchanged."]
+  },
+  "workers": [
+    {
+      "id": "plan-map",
+      "role": "scout",
+      "displayName": "Plan coverage map",
+      "goal": "Map plan requirements to present, partial, missing, or excluded capabilities.",
+      "criteria": ["AC1", "AC2"],
+      "scope": ["Plan and repository structure"],
+      "checks": ["Cite exact path:line evidence."]
+    }
+  ]
+}

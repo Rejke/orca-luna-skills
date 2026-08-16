@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.codex/orca-luna-cycle/report-v1.schema.json",
+  "title": "Orca Luna Worker Report v1",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "reportSchemaVersion",
+    "taskStatus",
+    "summary",
+    "evidence",
+    "findings",
+    "risks",
+    "checks",
+    "filesModified"
+  ],
+  "properties": {
+    "reportSchemaVersion": {"const": 1},
+    "taskStatus": {"enum": ["done", "blocked"]},
+    "verdict": {"enum": ["PASS", "FAIL", "UNKNOWN", "BLOCKED"]},
+    "summary": {"type": "string", "minLength": 1, "maxLength": 500},
+    "evidence": {
+      "type": "array",
+      "items": {"type": "string"},
+      "examples": [["src/example.ts:12 exact fact"]]
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["severity", "title", "evidence"],
+        "properties": {
+          "severity": {"enum": ["critical", "high", "medium", "low"]},
+          "location": {"type": "string"},
+          "title": {"type": "string"},
+          "evidence": {"type": "string"},
+          "recommendation": {"type": "string"}
+        }
+      },
+      "examples": [
+        [
+          {
+            "severity": "high",
+            "title": "Material bounded finding",
+            "evidence": "src/example.ts:12 reproducible evidence"
+          }
+        ]
+      ]
+    },
+    "risks": {"type": "array", "items": {"type": "string"}},
+    "checks": {
+      "type": "array",
+      "items": {"type": "string"},
+      "examples": [["command --check -> passed"]]
+    },
+    "filesModified": {"type": "array", "items": {"type": "string"}},
+    "criteria": {
+      "type": "object",
+      "additionalProperties": {"type": "string"}
+    },
+    "shards": {"type": "array", "items": {"type": "object"}},
+    "cuts": {"type": "array", "items": {"type": "object"}},
+    "leanness": {"type": "integer", "minimum": 1, "maximum": 10},
+    "commit": {"type": ["string", "null"]},
+    "integrated": {"type": "array", "items": {"type": "string"}},
+    "anchor": {"type": "string"},
+    "conflicts": {"type": "array", "items": {"type": "string"}},
+    "fixed": {"type": "array", "items": {"type": "string"}}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"taskStatus": {"const": "blocked"}}},
+      "then": {"properties": {"verdict": {"const": "BLOCKED"}}}
+    }
+  ]
+}

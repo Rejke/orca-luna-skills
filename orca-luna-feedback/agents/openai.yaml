@@ -1,0 +1,4 @@
+interface:
+  display_name: "Orca Luna Feedback"
+  short_description: "Evidence-grounded post-wave feedback and durable retro log"
+  default_prompt: "Use $orca-luna-feedback to scaffold facts from the finished wave's receipts, write the verdict, per-worker deltas, next-wave manifest adjustments, and skill gaps, then archive the note."

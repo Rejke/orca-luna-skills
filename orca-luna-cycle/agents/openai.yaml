@@ -1,0 +1,4 @@
+interface:
+  display_name: "Orca Luna Swarm"
+  short_description: "Parallel Orca swarm with worktrees and anti-slop"
+  default_prompt: "Use $orca-luna-cycle to implement this task with an adaptive Orca worktree swarm: Luna max for business logic and backend, Fable 5 high for frontend UI, fresh Sol xhigh review, and an anti-slop quality gate."

@@ -1,0 +1,112 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.codex/orca-luna-cycle/manifest-v2.schema.json",
+  "title": "Orca Luna Cycle Manifest v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "mode", "objective", "envelope", "workers"],
+  "properties": {
+    "schemaVersion": {"const": 2},
+    "mode": {"enum": ["implementation", "audit", "benchmark"]},
+    "objective": {"type": "string", "minLength": 1, "maxLength": 1000},
+    "runId": {"type": "string", "pattern": "^run[_-]"},
+    "envelope": {"$ref": "#/$defs/envelope"},
+    "defaults": {"$ref": "#/$defs/defaults"},
+    "workers": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 10,
+      "items": {"$ref": "#/$defs/worker"}
+    }
+  },
+  "$defs": {
+    "stringList": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "default": []
+    },
+    "envelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["goal", "acceptanceCriteria", "constraints", "repairBudget"],
+      "properties": {
+        "goal": {"type": "string", "minLength": 1},
+        "nonGoals": {"$ref": "#/$defs/stringList"},
+        "acceptanceCriteria": {
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": {"pattern": "^AC[0-9]+$"},
+          "additionalProperties": {"type": "string", "minLength": 1}
+        },
+        "constraints": {"$ref": "#/$defs/stringList"},
+        "baseAnchor": {"type": "string", "minLength": 1},
+        "dirtyState": {"$ref": "#/$defs/stringList"},
+        "integrationDestination": {"type": "string", "minLength": 1},
+        "repairBudget": {"type": "integer", "minimum": 0, "maximum": 10},
+        "benchmarkReason": {"type": "string", "minLength": 1},
+        "reviewedAnchor": {"type": "string", "minLength": 1},
+        "reviewOverride": {"type": "string", "minLength": 1}
+      }
+    },
+    "defaults": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "worktree": {"type": "string", "minLength": 1, "default": "current"},
+        "mutation": {"enum": ["allowed", "forbidden"]},
+        "setup": {"enum": ["run", "skip", "inherit"], "default": "run"},
+        "checks": {"$ref": "#/$defs/stringList"}
+      }
+    },
+    "worker": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "role", "goal", "criteria"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z][a-z0-9_-]{0,39}$"},
+        "role": {
+          "enum": ["scout", "implementer", "integrator", "reviewer", "antislop", "fixer"]
+        },
+        "goal": {"type": "string", "minLength": 1},
+        "criteria": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^AC[0-9]+$"}
+        },
+        "scope": {"$ref": "#/$defs/stringList"},
+        "constraints": {"$ref": "#/$defs/stringList"},
+        "checks": {"$ref": "#/$defs/stringList"},
+        "ownership": {"$ref": "#/$defs/stringList"},
+        "context": {"type": "string"},
+        "findings": {"type": "array", "items": {}},
+        "handoffs": {"type": "array", "items": {}},
+        "lens": {"type": "string"},
+        "launch": {"enum": ["luna-max", "terra-xhigh", "sol-xhigh", "fable-high"]},
+        "worktree": {"type": "string", "minLength": 1},
+        "mutation": {"enum": ["allowed", "forbidden"]},
+        "name": {"type": "string", "minLength": 1},
+        "displayName": {"type": "string", "minLength": 1},
+        "setup": {"enum": ["run", "skip", "inherit"]}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"role": {"enum": ["reviewer", "antislop"]}}},
+          "then": {"properties": {"launch": {"const": "sol-xhigh"}}}
+        },
+        {
+          "if": {
+            "properties": {
+              "role": {"enum": ["scout", "implementer", "integrator", "fixer"]}
+            }
+          },
+          "then": {
+            "properties": {
+              "launch": {"enum": ["luna-max", "terra-xhigh", "fable-high"]}
+            }
+          }
+        }
+      ]
+    }
+  }
+}
