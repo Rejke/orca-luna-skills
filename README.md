@@ -27,7 +27,7 @@ npx skills add rejke/orca-luna-skills --skill orca-luna-cycle
 
 ## Requirements
 
-- Orca >= 1.4.184-fix.1 with the orchestration contract, plus its CLI on PATH
+- Orca >= 1.4.184 with the orchestration contract, plus its CLI on PATH
 - `codex` CLI (models are verified against `codex debug models` at preflight)
 - `claude` CLI on PATH only if you use the `fable-high` launch spec
 - `uv` on PATH (helpers run via `uv run --no-project`, stdlib-only Python)
