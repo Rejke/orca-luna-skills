@@ -9,7 +9,6 @@
     "schemaVersion": {"const": 2},
     "mode": {"enum": ["implementation", "audit", "benchmark"]},
     "objective": {"type": "string", "minLength": 1, "maxLength": 1000},
-    "runId": {"type": "string", "pattern": "^run[_-]"},
     "envelope": {"$ref": "#/$defs/envelope"},
     "defaults": {"$ref": "#/$defs/defaults"},
     "workers": {

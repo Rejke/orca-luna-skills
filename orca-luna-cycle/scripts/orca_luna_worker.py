@@ -51,11 +51,11 @@ MAX_WORKERS = 10
 MAX_PROMPT_CHARS = 16_000
 PROMPT_BUDGET_CHARS = 8_000
 MAX_BODY_OUTPUT_CHARS = 3_000
-MESSAGE_TYPES = {"worker_done", "question", "escalation", "heartbeat", "status"}
 STATE_FILE = "wave-state.json"
 CANCEL_FILE = "cancel.requested.json"
 NOTIFICATION_FILE = "controller-notification.pending.json"
-STATE_VERSION = 3
+AGENT_BOOT_TIMEOUT_MS = 120_000
+STATE_VERSION = 4
 MANIFEST_VERSION = 2
 REPORT_VERSION = 1
 MIN_ORCA_VERSION = "1.4.184"
@@ -64,69 +64,43 @@ REFERENCES = SKILL_ROOT / "references"
 MODES = {"implementation", "audit", "benchmark"}
 MUTATOR_ROLES = {"implementer", "integrator", "fixer"}
 REVIEW_ROLES = {"reviewer", "antislop"}
+# v2 dispatch runs on plain Orca terminals and worktrees; the orchestration
+# layer (runs, tasks, dispatches, mail) is not used. Workers get their prompt
+# from a file, write their report to a file, and ping Sol with the wake hook.
 REQUIRED_ORCA_COMMANDS = {
     "agent-context": {"json"},
     "worktree current": {"json"},
     "worktree show": {"worktree", "json"},
-    "terminal rename": {"terminal", "title", "json"},
+    "worktree create": {"name", "setup", "json"},
+    "terminal create": {"worktree", "title", "command", "json"},
     "terminal send": {"terminal", "text", "enter", "json"},
-    "orchestration run-create": {"objective", "json"},
-    "orchestration run-show": {"id", "json"},
-    "orchestration run-use": {"id", "json"},
-    "orchestration task-create": {
-        "spec",
-        "task-title",
-        "display-name",
-        "run",
-        "json",
-    },
-    "orchestration task-list": {"run", "brief", "json"},
-    "orchestration task-update": {"id", "status", "result", "json"},
-    "orchestration worker-start": {
-        "task",
-        "worktree",
-        "agent",
-        "model",
-        "effort",
-        "name",
-        "display-name",
-        "setup",
-        "run",
-        "json",
-    },
-    "orchestration worker-show": {"dispatch", "json"},
-    "orchestration worker-stop": {"dispatch", "json"},
-    "orchestration worker-release": {"dispatch", "json"},
-    "orchestration check": {
-        "run",
-        "ack",
-        "json",
-    },
-    "orchestration send": {
-        "from",
-        "dispatch-capability",
-        "type",
-        "subject",
-        "body",
-        "payload",
-        "task-id",
-        "dispatch-id",
-        "outcome",
-        "files-modified",
-        "report-path",
-        "phase",
-        "json",
-    },
+    "terminal read": {"terminal", "cursor", "limit", "json"},
+    "terminal wait": {"terminal", "for", "timeout-ms", "json"},
+    "terminal rename": {"terminal", "title", "json"},
+    "terminal close": {"terminal", "json"},
 }
 TOP_LEVEL_FIELDS = {
     "schemaVersion",
     "mode",
     "objective",
-    "runId",
     "envelope",
     "defaults",
     "workers",
 }
+
+
+def spawn_command(spec: dict[str, Any]) -> str:
+    """Shell command that starts the worker agent with its exact launch spec.
+
+    No quotes anywhere: the string crosses the Windows PowerShell bridge once,
+    and codex parses a bare -c value as a literal string.
+    """
+    if spec["agent"] == "codex":
+        command = f"codex -m {spec['model']} -c model_reasoning_effort={spec['effort']}"
+        if spec.get("speedTier") == "fast":
+            command += " -c service_tier=priority"
+        return command
+    return f"claude --model {spec['model']}"
 ENVELOPE_FIELDS = {
     "goal",
     "nonGoals",
@@ -415,33 +389,27 @@ def render_prompt(worker: dict[str, Any], envelope: dict[str, Any], mode: str) -
             "implementation depth, reinvention, wrapper/comment slop, and wasted work."
         )
     parts.append(
-        "REPORT\nSend worker_done exactly as Orca's preamble shows. Copy the "
-        "injected command and keep its --task-id, --dispatch-id, and --outcome "
-        "flags unchanged. Keep --body to exactly three executive-summary "
-        "sentences. Write the full report as compact JSON (material evidence "
-        "only, <=3000 chars) to a fresh file under /tmp with the Write tool. "
-        "Pass that file's absolute path as --report-path. Do not add a raw "
-        "--payload. The report must match this contract. Replace every <...> "
-        "placeholder; use an empty array when a category has no material "
-        "items:\n" + compact_json(report_example(role))
+        "REPORT\nWhen the job is finished, write the report as compact JSON "
+        "(material evidence only, <=3000 chars) to the report file named in "
+        "the RUNTIME section, with the Write tool. The report must match this "
+        "contract. Replace every <...> placeholder; use an empty array when a "
+        "category has no material items:\n" + compact_json(report_example(role))
     )
     parts.append(
-        "Exactly one accepted completion ends the task. Send worker_done only "
-        "when the job is finished — never a probe or a partial completion. The "
-        "first accepted completion becomes your report of record. If the CLI "
-        "rejects the send before it records anything, fix the command from the "
-        "error text and resend once. The error plus --help is the complete "
-        "contract; never investigate CLI internals, wrappers, or binaries. "
-        "Never put the report into a status or question message.\n"
-        "This skill overrides one point from the preamble: do not use blocking "
-        'ask. A truly blocked task completes once with taskStatus "blocked" '
-        "and evidence; Sol then answers and starts a fresh continuation. "
-        "Heartbeats stay as the preamble says."
+        "The report file is your only channel to the controller. Write it "
+        "once, when your work is complete or truly blocked — never as a draft "
+        "or probe. If you are blocked, set taskStatus to \"blocked\", add a "
+        "one-sentence question field, write the file, run the wake command, "
+        "and stay idle in this terminal: the controller answers into this "
+        "same session, and you then continue the task and write the final "
+        "report. Never ask questions any other way; never use "
+        "AskUserQuestion. After the final report, run the wake command from "
+        "the RUNTIME section and stop."
     )
     if role in {"reviewer", "antislop"}:
         parts.append(
-            "A completed review uses lifecycle outcome succeeded even when the verdict is "
-            "FAIL, UNKNOWN, or BLOCKED; failed means the review job itself failed. "
+            'A finished review has taskStatus "done" even when the verdict is '
+            "FAIL or UNKNOWN; the verdict judges the code, not your job. "
             "When the allowed evidence cannot prove or refute a claim, return verdict "
             "UNKNOWN and list the exact unprovable claims in risks; never stretch an "
             "evidence gap into PASS or into a FAIL finding without a defect."
@@ -470,8 +438,16 @@ def render_prompt(worker: dict[str, Any], envelope: dict[str, Any], mode: str) -
     return prompt
 
 
-def runtime_prompt(prompt: str, directory: Path) -> str:
-    """Append the wake-only completion hook once live journal identity exists."""
+def worker_prompt_path(directory: Path, worker_id: str) -> Path:
+    return directory / "prompts" / f"{worker_id}.txt"
+
+
+def worker_report_path(directory: Path, worker_id: str) -> Path:
+    return directory / "reports" / "incoming" / f"{worker_id}.json"
+
+
+def runtime_prompt(prompt: str, directory: Path, worker_id: str) -> str:
+    """Append the concrete runtime paths: report file and wake command."""
     notify_command = shlex.join(
         [
             "uv",
@@ -484,12 +460,12 @@ def runtime_prompt(prompt: str, directory: Path) -> str:
         ]
     )
     block = (
-        "CONTROLLER WAKE\n"
-        "In the same shell tool call as your worker_done command, append this with "
-        "&& so it runs only after Orca accepts the completion:\n"
+        "RUNTIME\n"
+        f"Report file: {worker_report_path(directory, worker_id)}\n"
+        "Wake command (run it in the shell after you write the report file):\n"
         f"{notify_command}\n"
-        "It queues one wake for Sol and carries no lifecycle authority. Then stop "
-        "as Orca's preamble requires."
+        "The wake only tells the controller to look; the report file carries "
+        "everything. After the wake, stop and stay idle in this terminal."
     )
     rendered = prompt.rstrip() + "\n\n" + block + "\n"
     if len(rendered) > MAX_PROMPT_CHARS:
@@ -518,11 +494,6 @@ def validate_manifest(
     if mode not in MODES:
         raise HelperError(f"manifest.mode must be one of: {', '.join(sorted(MODES))}")
     objective = require_string(manifest.get("objective"), "manifest.objective")
-    run_id = manifest.get("runId")
-    if run_id is not None:
-        run_id = require_string(run_id, "manifest.runId")
-        if not re.match(r"^run[_-]", run_id):
-            raise HelperError("manifest.runId must be an Orca Run ID")
     envelope = require_object(
         manifest.get("envelope"), "manifest.envelope", ENVELOPE_FIELDS
     )
@@ -783,8 +754,6 @@ def validate_manifest(
         },
         "workers": manifest_workers,
     }
-    if run_id:
-        normalized_manifest["runId"] = run_id
     prompts = [
         render_prompt(worker, normalized_envelope, mode)
         for worker in normalized_workers
@@ -1028,43 +997,6 @@ def worker_label(worker: dict[str, Any], index: int) -> str:
     return prefix + concise
 
 
-def worker_start_args(
-    worker: dict[str, Any], task_id: str, label: str, run_id: str
-) -> list[str]:
-    worktree = worker.get("worktree", "current")
-    spec = LAUNCH_SPECS[worker["launch"]]
-    args = [
-        "orchestration",
-        "worker-start",
-        "--task",
-        task_id,
-        "--worktree",
-        worktree,
-        "--agent",
-        spec["agent"],
-        "--model",
-        spec["model"],
-        "--effort",
-        spec["effort"],
-    ]
-    if spec.get("speedTier") == "fast":
-        args.append("--fast")
-    args.extend(["--run", run_id])
-    if worktree in {"new-child", "new-top-level"}:
-        args.extend(
-            [
-                "--name",
-                worker["name"],
-                "--display-name",
-                label,
-                "--setup",
-                worker.get("setup", "run"),
-            ]
-        )
-    args.append("--json")
-    return args
-
-
 def manifest_digest(manifest: dict[str, Any]) -> str:
     encoded = compact_json(manifest).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
@@ -1088,12 +1020,12 @@ def archive_helper(directory: Path) -> Path:
 
 def ensure_journal(directory: Path) -> None:
     for name in (
-        "tasks",
-        "dispatches",
-        "deliveries",
+        "prompts",
+        "worktrees",
+        "terminals",
         "reports",
-        "questions",
-        "releases",
+        "reports/incoming",
+        "answers",
         "notifications",
         "runtime",
     ):
@@ -1144,15 +1076,13 @@ def command_registry(context: Any) -> dict[str, dict[str, Any]]:
 
 
 def command_contract_check(
-    context: Any, *, require_fast: bool = False
+    context: Any,
 ) -> tuple[list[dict[str, Any]], str]:
     registry = command_registry(context)
     checks: list[dict[str, Any]] = []
     relevant: dict[str, Any] = {}
     for command, required_flags in REQUIRED_ORCA_COMMANDS.items():
         required_flags = set(required_flags)
-        if command == "orchestration worker-start" and require_fast:
-            required_flags.add("fast")
         spec = registry.get(command)
         flags = set(spec.get("flags", [])) if isinstance(spec, dict) else set()
         missing = sorted(required_flags - flags)
@@ -1312,23 +1242,6 @@ def preflight_manifest(
             "minimum": MIN_ORCA_VERSION,
         }
     )
-    capabilities = set(runtime.get("capabilities", []))
-    required_capabilities = {
-        "orchestration.contract.v1",
-        "orchestration.worker-launch-preferences.v1",
-    }
-    uses_fast = any(
-        LAUNCH_SPECS[worker["launch"]].get("speedTier") for worker in workers
-    )
-    if uses_fast:
-        required_capabilities.add("orchestration.worker-fast-mode.v1")
-    checks.append(
-        {
-            "name": "runtime-capabilities",
-            "passed": required_capabilities <= capabilities,
-            "missing": sorted(required_capabilities - capabilities),
-        }
-    )
 
     context_code, context, context_detail = call_orca(["agent-context", "--json"])
     contract_hash = None
@@ -1338,9 +1251,7 @@ def preflight_manifest(
             context.get("schemaVersion") if isinstance(context, dict) else None
         )
         try:
-            command_checks, contract_hash = command_contract_check(
-                context, require_fast=uses_fast
-            )
+            command_checks, contract_hash = command_contract_check(context)
         except HelperError as exc:
             checks.append(
                 {
@@ -1367,18 +1278,6 @@ def preflight_manifest(
         }
     )
 
-    run_id = manifest.get("runId")
-    if run_id:
-        returncode, payload, detail = call_orca(
-            ["orchestration", "run-show", "--id", run_id, "--json"]
-        )
-        checks.append(
-            {
-                "name": f"run:{run_id}",
-                "passed": returncode == 0 and payload is not None,
-                **({} if returncode == 0 else {"error": detail}),
-            }
-        )
 
     selectors = sorted(
         {
@@ -1500,7 +1399,10 @@ def command_preflight(args: argparse.Namespace) -> int:
     ensure_journal(directory)
     archived = archive_helper(directory)
     save_json(directory / "manifest.json", manifest)
-    live_prompts = [runtime_prompt(prompt, directory) for prompt in prompts]
+    live_prompts = [
+        runtime_prompt(prompt, directory, worker["id"])
+        for worker, prompt in zip(workers, prompts)
+    ]
     receipt = preflight_manifest(manifest, workers)
     receipt["helper"] = {"sha256": helper_digest(), "archived": str(archived)}
     receipt["workers"] = [
@@ -1564,7 +1466,7 @@ def verify_preflight(
     if not archived_helper(directory).exists():
         archive_helper(directory)
     for prompt in prompts:
-        runtime_prompt(prompt, directory)
+        runtime_prompt(prompt, directory, "size-check")
 
     current = preflight_manifest(manifest, workers)
     save_json(directory / "runtime" / "pre-dispatch.json", current)
@@ -1639,20 +1541,16 @@ def wave_records(state: dict[str, Any]) -> list[dict[str, Any]]:
         "launch",
         "mutation",
         "label",
-        "task_id",
-        "dispatch_id",
         "worktree_id",
         "terminal_handle",
-        "tab_title_status",
-        "tab_title_error",
+        "spawn_command",
+        "banner_proof",
         "start_status",
-        "lifecycle_status",
-        "completion_accepted",
-        "task_outcome",
-        "orca_task_status",
         "report_status",
+        "task_status",
         "verdict",
-        "release_status",
+        "question",
+        "answers",
         "notification_status",
         "stop_status",
         "error",
@@ -1700,160 +1598,199 @@ def classify_failure(payload: Any, *, known_effect_id: str | None = None) -> str
     return "outcome_unknown"
 
 
-def launch_preferences(payload: Any) -> dict[str, Any]:
-    launch = first_named(payload, "launch")
-    if not isinstance(launch, dict):
-        return {}
-    requested = launch.get("requested")
-    effective = launch.get("effective")
-    return {
-        "launch_requested": requested if isinstance(requested, dict) else None,
-        "launch_effective": effective if isinstance(effective, dict) else None,
-    }
+AMBIGUOUS_START_STATUSES = {
+    "creating_worktree",
+    "spawning",
+    "booting",
+    "worktree_outcome_unknown",
+    "terminal_outcome_unknown",
+}
 
 
-def create_pending_tasks(
+def write_prompts(
     directory: Path, workers: list[dict[str, Any]], prompts: list[str]
 ) -> None:
-    run_id = require_string(read_wave_state(directory).get("run_id"), "wave.run_id")
-    for index, (worker, prompt) in enumerate(zip(workers, prompts), start=1):
-        if cancel_requested(directory):
-            return
-        record = read_wave_state(directory)["workers"][index - 1]
-        if record.get("task_id"):
-            continue
-        if record.get("start_status") != "pending":
-            raise HelperError(
-                f"worker {index} is {record.get('start_status')}; refusing an ambiguous Task retry"
-            )
-        update_worker_state(directory, index, start_status="creating_task")
-        label = record["label"]
-        task_args = [
-            "orchestration",
-            "task-create",
-            "--spec",
-            runtime_prompt(prompt, directory),
-            "--task-title",
-            label,
-            "--display-name",
-            label,
-            "--run",
-            run_id,
-            "--json",
-        ]
-        returncode, receipt, detail = call_orca(task_args)
-        save_json(
-            directory / "tasks" / f"{worker['id']}.json",
-            receipt
-            if receipt is not None
-            else {"returncode": returncode, "detail": detail},
-        )
-        task_id = find_entity_id(receipt, "task") if receipt else None
-        if returncode != 0 or not task_id:
-            error = f"task-create exited {returncode}: {detail}"
-            classification = classify_failure(receipt, known_effect_id=task_id)
-            update_worker_state(
-                directory,
-                index,
-                task_id=task_id,
-                start_status=f"task_{classification}",
-                error=error,
-            )
-            raise HelperError(f"{error}; receipts: {directory}")
-        update_worker_state(
-            directory, index, task_id=task_id, start_status="task_created", error=None
+    for worker, prompt in zip(workers, prompts):
+        path = worker_prompt_path(directory, worker["id"])
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            runtime_prompt(prompt, directory, worker["id"]), encoding="utf-8"
         )
 
 
-def start_pending_workers(directory: Path, workers: list[dict[str, Any]]) -> None:
-    run_id = require_string(read_wave_state(directory).get("run_id"), "wave.run_id")
+def spawn_pending_workers(directory: Path, workers: list[dict[str, Any]]) -> None:
     for index, worker in enumerate(workers, start=1):
         if cancel_requested(directory):
             return
         record = read_wave_state(directory)["workers"][index - 1]
-        if record.get("dispatch_id"):
+        if record.get("terminal_handle") and record.get("start_status") == "running":
             continue
-        if record.get("start_status") != "task_created":
+        if record.get("start_status") != "pending":
             raise HelperError(
-                f"worker {index} is {record.get('start_status')}; refusing an ambiguous worker retry"
+                f"worker {index} is {record.get('start_status')}; "
+                "refusing an ambiguous spawn retry"
             )
-        task_id = record.get("task_id")
-        if not task_id:
-            raise HelperError(f"worker {index} has no Task ID")
-        update_worker_state(directory, index, start_status="starting_worker")
-        returncode, receipt, detail = call_orca(
-            worker_start_args(worker, task_id, record["label"], run_id)
-        )
-        save_json(
-            directory / "dispatches" / f"{worker['id']}.json",
-            receipt
-            if receipt is not None
-            else {"returncode": returncode, "detail": detail},
-        )
-        dispatch_id = find_entity_id(receipt, "dispatch") if receipt else None
-        worktree_id = find_entity_id(receipt, "worktree") if receipt else None
-        terminal_handle = find_terminal_handle(receipt) if receipt else None
-        changes: dict[str, Any] = {
-            "dispatch_id": dispatch_id,
-            "worktree_id": worktree_id,
-            "terminal_handle": terminal_handle,
-            **launch_preferences(receipt),
-        }
-        if returncode != 0 or not dispatch_id:
-            classification = classify_failure(receipt, known_effect_id=dispatch_id)
-            changes.update(
-                start_status=f"worker_{classification}",
-                error=f"worker-start exited {returncode}: {detail}",
-            )
-            update_worker_state(directory, index, **changes)
-            if cancel_requested(directory):
-                return
-            guidance = (
-                "outcome is ambiguous; do not retry"
-                if classification == "outcome_unknown"
-                else "outcome is classified; do not replay this worker-start in the same wave"
-            )
-            spec = LAUNCH_SPECS[worker["launch"]]
-            raise HelperError(
-                f"worker-start {index} {classification} at exact "
-                f"{spec['model']} {spec['effort']}; "
-                f"{guidance}: {detail}; receipts: {directory}"
-            )
-        changes.update(
-            start_status="running",
-            tab_title_status="pending" if terminal_handle else "unavailable",
-            error=None,
-        )
-        update_worker_state(directory, index, **changes)
-        if cancel_requested(directory):
-            return
-        if terminal_handle:
-            rename_code, rename_receipt, rename_detail = call_orca(
+        spec = LAUNCH_SPECS[worker["launch"]]
+        worktree = worker["worktree"]
+        if worktree in {"new-child", "new-top-level"}:
+            update_worker_state(directory, index, start_status="creating_worktree")
+            returncode, receipt, detail = call_orca(
                 [
-                    "terminal",
-                    "rename",
-                    "--terminal",
-                    terminal_handle,
-                    "--title",
-                    record["label"],
+                    "worktree",
+                    "create",
+                    "--name",
+                    worker["name"],
+                    "--setup",
+                    worker.get("setup", "run"),
                     "--json",
                 ]
             )
             save_json(
-                directory / "runtime" / f"tab-title-{worker['id']}.json",
-                rename_receipt
-                if rename_receipt is not None
-                else {"returncode": rename_code, "detail": rename_detail},
+                directory / "worktrees" / f"{worker['id']}.json",
+                receipt
+                if receipt is not None
+                else {"returncode": returncode, "detail": detail},
             )
-            if rename_code == 0:
-                update_worker_state(directory, index, tab_title_status="renamed")
-            else:
+            worktree_id = find_entity_id(receipt, "worktree") if receipt else None
+            if returncode != 0 or not worktree_id:
+                classification = classify_failure(receipt, known_effect_id=worktree_id)
                 update_worker_state(
                     directory,
                     index,
-                    tab_title_status="rename_failed",
-                    tab_title_error=rename_detail,
+                    worktree_id=worktree_id,
+                    start_status=f"worktree_{classification}",
+                    error=f"worktree create exited {returncode}: {detail}",
                 )
+                raise HelperError(
+                    f"worktree create for worker {index} {classification}: "
+                    f"{detail}; receipts: {directory}"
+                )
+            update_worker_state(directory, index, worktree_id=worktree_id)
+            selector = f"id:{worktree_id}"
+        else:
+            selector = worktree
+        if cancel_requested(directory):
+            return
+        update_worker_state(directory, index, start_status="spawning")
+        command = spawn_command(spec)
+        returncode, receipt, detail = call_orca(
+            [
+                "terminal",
+                "create",
+                "--worktree",
+                selector,
+                "--title",
+                record["label"],
+                "--command",
+                command,
+                "--json",
+            ]
+        )
+        save_json(
+            directory / "terminals" / f"{worker['id']}.json",
+            receipt
+            if receipt is not None
+            else {"returncode": returncode, "detail": detail},
+        )
+        handle = find_terminal_handle(receipt) if receipt else None
+        if returncode != 0 or not handle:
+            classification = classify_failure(receipt, known_effect_id=handle)
+            update_worker_state(
+                directory,
+                index,
+                terminal_handle=handle,
+                start_status=f"terminal_{classification}",
+                error=f"terminal create exited {returncode}: {detail}",
+            )
+            raise HelperError(
+                f"terminal create for worker {index} {classification} at exact "
+                f"{spec['model']} {spec['effort']}: {detail}; receipts: {directory}"
+            )
+        update_worker_state(
+            directory,
+            index,
+            terminal_handle=handle,
+            spawn_command=command,
+            start_status="booting",
+            error=None,
+        )
+        wait_code, wait_receipt, wait_detail = call_orca(
+            [
+                "terminal",
+                "wait",
+                "--terminal",
+                handle,
+                "--for",
+                "tui-idle",
+                "--timeout-ms",
+                str(AGENT_BOOT_TIMEOUT_MS),
+                "--json",
+            ]
+        )
+        save_json(
+            directory / "runtime" / f"boot-{worker['id']}.json",
+            wait_receipt
+            if wait_receipt is not None
+            else {"returncode": wait_code, "detail": wait_detail},
+        )
+        if wait_code != 0:
+            update_worker_state(
+                directory, index, start_status="boot_failed", error=wait_detail
+            )
+            raise HelperError(
+                f"worker {index} agent did not reach idle in "
+                f"{AGENT_BOOT_TIMEOUT_MS} ms: {wait_detail}; receipts: {directory}"
+            )
+        # The boot banner is secondary launch evidence; the primary proof is the
+        # spawn command this helper recorded itself.
+        banner_proof = False
+        read_code, read_receipt, _ = call_orca(
+            ["terminal", "read", "--terminal", handle, "--limit", "60", "--json"]
+        )
+        if read_code == 0 and read_receipt is not None:
+            save_json(directory / "runtime" / f"banner-{worker['id']}.json", read_receipt)
+            banner_proof = spec["model"] in compact_json(read_receipt)
+        pointer = (
+            f"Read the file {worker_prompt_path(directory, worker['id'])} "
+            "and do exactly what it says."
+        )
+        send_code, send_receipt, send_detail = call_orca(
+            [
+                "terminal",
+                "send",
+                "--terminal",
+                handle,
+                "--text",
+                pointer,
+                "--enter",
+                "--json",
+            ]
+        )
+        save_json(
+            directory / "runtime" / f"prompt-send-{worker['id']}.json",
+            send_receipt
+            if send_receipt is not None
+            else {"returncode": send_code, "detail": send_detail},
+        )
+        if send_code != 0:
+            update_worker_state(
+                directory,
+                index,
+                start_status="prompt_send_failed",
+                banner_proof=banner_proof,
+                error=send_detail,
+            )
+            raise HelperError(
+                f"prompt delivery to worker {index} failed: {send_detail}; "
+                f"receipts: {directory}"
+            )
+        update_worker_state(
+            directory,
+            index,
+            start_status="running",
+            banner_proof=banner_proof,
+            error=None,
+        )
         if cancel_requested(directory):
             return
 
@@ -1864,90 +1801,42 @@ def reconcile_stop_wave(directory: Path) -> dict[str, Any]:
     snapshot = read_wave_state(directory)
     for record in snapshot["workers"]:
         index = record["index"]
-        dispatch_id = record.get("dispatch_id")
-        task_id = record.get("task_id")
+        handle = record.get("terminal_handle")
         if record.get("stop_status") == "stopped":
             continue
-        if (
-            record.get("stop_status") == "not_created"
-            and not dispatch_id
-            and not task_id
-        ):
-            continue
-        if record.get("stop_status") == "task_blocked" and not dispatch_id:
-            continue
-        if dispatch_id:
-            returncode, receipt, detail = call_orca(
-                ["orchestration", "worker-stop", "--dispatch", dispatch_id, "--json"]
-            )
-            save_json(
-                directory / "runtime" / f"stop-{record['worker_id']}.json",
-                receipt
-                if receipt is not None
-                else {"returncode": returncode, "detail": detail},
-            )
-            if returncode == 0:
-                update_worker_state(directory, index, stop_status="stopped")
-            else:
-                errors.append(f"worker {index}: {detail}")
-                update_worker_state(
-                    directory, index, stop_status="stop_failed", error=detail
-                )
-        elif task_id:
-            returncode, receipt, detail = call_orca(
-                [
-                    "orchestration",
-                    "task-update",
-                    "--id",
-                    task_id,
-                    "--status",
-                    "blocked",
-                    "--result",
-                    compact_json({"reason": "wave_cancelled"}),
-                    "--json",
-                ]
-            )
-            save_json(
-                directory / "runtime" / f"block-{record['worker_id']}.json",
-                receipt
-                if receipt is not None
-                else {"returncode": returncode, "detail": detail},
-            )
-            if returncode == 0:
-                update_worker_state(directory, index, stop_status="task_blocked")
-            else:
-                errors.append(f"task {index}: {detail}")
-                update_worker_state(
-                    directory, index, stop_status="block_failed", error=detail
-                )
-        else:
+        if not handle:
             update_worker_state(
                 directory,
                 index,
-                start_status="cancelled",
+                start_status="cancelled"
+                if record.get("start_status") == "pending"
+                else record.get("start_status"),
                 stop_status="not_created",
-                tab_title_status="not_created",
+            )
+            continue
+        returncode, receipt, detail = call_orca(
+            ["terminal", "close", "--terminal", handle, "--json"]
+        )
+        save_json(
+            directory / "runtime" / f"stop-{record['worker_id']}.json",
+            receipt
+            if receipt is not None
+            else {"returncode": returncode, "detail": detail},
+        )
+        if returncode == 0:
+            update_worker_state(directory, index, stop_status="stopped")
+        else:
+            errors.append(f"worker {index}: {detail}")
+            update_worker_state(
+                directory, index, stop_status="stop_failed", error=detail
             )
     latest = read_wave_state(directory)
     unresolved = [
         record["index"]
         for record in latest["workers"]
-        if record.get("start_status")
-        in {
-            "creating_task",
-            "starting_worker",
-            "task_outcome_unknown",
-            "worker_outcome_unknown",
-        }
-        or record.get("stop_status") in {"stop_failed", "block_failed"}
-        or (record.get("dispatch_id") and record.get("stop_status") != "stopped")
+        if record.get("start_status") in AMBIGUOUS_START_STATUSES
+        or record.get("stop_status") == "stop_failed"
     ]
-    if latest.get("run_status") in {
-        "creating_run",
-        "binding_run",
-        "outcome_unknown",
-    }:
-        unresolved.insert(0, "run")
     phase = "cancel_pending" if errors or unresolved else "cancelled"
     set_wave_phase(directory, phase, error="; ".join(errors) if errors else None)
     final = read_wave_state(directory)
@@ -1969,13 +1858,10 @@ def continue_wave(directory: Path, *, resumed: bool) -> int:
         )
     if cancel_requested(directory) or state.get("cancel_requested"):
         raise HelperError("wave is cancelled; resume is forbidden")
-    set_wave_phase(directory, "creating_tasks")
-    create_pending_tasks(directory, workers, prompts)
-    if cancel_requested(directory):
-        print(compact_json(reconcile_stop_wave(directory)), flush=True)
-        return 0
-    set_wave_phase(directory, "starting_workers")
-    start_pending_workers(directory, workers)
+    set_wave_phase(directory, "writing_prompts")
+    write_prompts(directory, workers, prompts)
+    set_wave_phase(directory, "spawning_workers")
+    spawn_pending_workers(directory, workers)
     if cancel_requested(directory):
         print(compact_json(reconcile_stop_wave(directory)), flush=True)
         return 0
@@ -2010,8 +1896,6 @@ def initialize_wave_state(
             "controller_terminal_handle": require_string(
                 os.environ.get("ORCA_TERMINAL_HANDLE"), "ORCA_TERMINAL_HANDLE"
             ),
-            "run_id": None,
-            "run_status": "pending",
             "phase": "initialized",
             "cancel_requested": False,
             "created_at": now,
@@ -2025,19 +1909,17 @@ def initialize_wave_state(
                     "mutation": worker["mutation"],
                     "criteria": worker["criteria"],
                     "label": worker_label(worker, index),
-                    "task_id": None,
-                    "dispatch_id": None,
                     "worktree_id": None,
                     "terminal_handle": None,
-                    "tab_title_status": "pending",
-                    "tab_title_error": None,
+                    "spawn_command": None,
+                    "banner_proof": None,
                     "start_status": "pending",
-                    "lifecycle_status": "pending",
-                    "completion_accepted": None,
-                    "task_outcome": None,
+                    "report_sha": None,
                     "report_status": "pending",
+                    "task_status": None,
                     "verdict": None,
-                    "release_status": "pending",
+                    "question": None,
+                    "answers": 0,
                     "notification_status": "pending",
                     "stop_status": None,
                     "error": None,
@@ -2046,55 +1928,6 @@ def initialize_wave_state(
             ],
         },
     )
-
-
-def create_or_bind_run(directory: Path, manifest: dict[str, Any]) -> str:
-    requested = manifest.get("runId")
-    operation = "binding_run" if requested else "creating_run"
-
-    def mark_started(state: dict[str, Any]) -> None:
-        state["run_status"] = operation
-        state["phase"] = operation
-
-    mutate_wave_state(directory, mark_started)
-    if requested:
-        arguments = ["orchestration", "run-use", "--id", requested, "--json"]
-    else:
-        arguments = [
-            "orchestration",
-            "run-create",
-            "--objective",
-            manifest["objective"],
-            "--json",
-        ]
-    returncode, receipt, detail = call_orca(arguments)
-    save_json(
-        directory / "run.json",
-        receipt
-        if receipt is not None
-        else {"returncode": returncode, "detail": detail},
-    )
-    observed_run_id = find_entity_id(receipt, "run") if receipt else None
-    run_id = requested or observed_run_id
-    if returncode != 0 or not run_id:
-        classification = classify_failure(receipt, known_effect_id=observed_run_id)
-
-        def mark_failed(state: dict[str, Any]) -> None:
-            state["run_id"] = run_id
-            state["run_status"] = classification
-
-        mutate_wave_state(directory, mark_failed)
-        raise HelperError(
-            f"run setup {classification}: Orca exited {returncode}: {detail}"
-        )
-
-    def update(state: dict[str, Any]) -> None:
-        state["run_id"] = run_id
-        state["run_status"] = "ready"
-        state["phase"] = "run_ready"
-
-    mutate_wave_state(directory, update)
-    return run_id
 
 
 def command_dispatch_wave(args: argparse.Namespace) -> int:
@@ -2146,10 +1979,6 @@ def command_dispatch_wave(args: argparse.Namespace) -> int:
         flush=True,
     )
     try:
-        create_or_bind_run(directory, manifest)
-        if cancel_requested(directory):
-            print(compact_json(reconcile_stop_wave(directory)), flush=True)
-            return 0
         return continue_wave(directory, resumed=False)
     except KeyboardInterrupt:
         print(compact_json(reconcile_stop_wave(directory)), flush=True)
@@ -2168,17 +1997,12 @@ def command_resume_wave(args: argparse.Namespace) -> int:
     ambiguous = [
         record["index"]
         for record in state["workers"]
-        if record.get("start_status")
-        in {
-            "creating_task",
-            "starting_worker",
-            "task_outcome_unknown",
-            "worker_outcome_unknown",
-        }
+        if record.get("start_status") in AMBIGUOUS_START_STATUSES
     ]
     if ambiguous:
         raise HelperError(
-            f"cannot safely resume ambiguous worker indices {ambiguous}; inspect receipts and stop the wave"
+            f"cannot safely resume ambiguous worker indices {ambiguous}; "
+            "inspect receipts and stop the wave"
         )
     try:
         return continue_wave(directory, resumed=True)
@@ -2193,163 +2017,20 @@ def command_stop_wave(args: argparse.Namespace) -> int:
     return 0
 
 
-def message_value(message: dict[str, Any], *names: str) -> Any:
-    wanted = {normalized_key(name) for name in names}
-    for key, value in message.items():
-        if normalized_key(key) in wanted:
-            return value
-    return None
-
-
-def decode_json(value: Any) -> Any:
-    if not isinstance(value, str):
-        return value
-    try:
-        return json.loads(value)
-    except json.JSONDecodeError:
-        return value
-
-
-def decoded_message_payload(message: dict[str, Any]) -> dict[str, Any]:
-    payload = decode_json(message_value(message, "payload"))
-    return payload if isinstance(payload, dict) else {}
-
-
-def message_metadata(message: dict[str, Any]) -> dict[str, Any]:
-    """Decode lifecycle metadata without coupling it to the report schema."""
-    payload = decoded_message_payload(message)
-    aliases = {
-        "taskId": ("task_id", "taskId"),
-        "dispatchId": ("dispatch_id", "dispatchId"),
-        "outcome": ("outcome",),
-        "accepted": ("accepted",),
-        "rejectionCode": ("rejection_code", "rejectionCode"),
-        "phase": ("phase",),
-    }
-    result: dict[str, Any] = {}
-    conflicts: list[str] = []
-    for output_name, names in aliases.items():
-        top_level = message_value(message, *names)
-        nested = message_value(payload, *names)
-        if top_level is not None and nested is not None and top_level != nested:
-            conflicts.append(output_name)
-        value = nested if nested is not None else top_level
-        if value is not None:
-            result[output_name] = value
-    identity_conflicts = [
-        field for field in conflicts if field in {"taskId", "dispatchId"}
-    ]
-    if identity_conflicts:
-        result["conflict"] = "identity_conflict"
-        result["conflictFields"] = identity_conflicts
-    elif "outcome" in conflicts:
-        result["conflict"] = "outcome_conflict"
-        result["conflictFields"] = ["outcome"]
-    return result
-
-
-def safe_receipt_name(value: Any, fallback: str) -> str:
-    if isinstance(value, str):
-        safe = re.sub(r"[^A-Za-z0-9_.-]", "_", value)
-        if safe:
-            return safe[:120]
-    return fallback
-
-
-def message_nodes(value: Any) -> list[dict[str, Any]]:
-    candidates: list[dict[str, Any]] = []
-    found_batch = False
-    for node in walk(value):
-        if not isinstance(node, dict):
-            continue
-        for key, child in node.items():
-            if normalized_key(key) != "messages" or not isinstance(child, list):
-                continue
-            found_batch = True
-            candidates.extend(item for item in child if isinstance(item, dict))
-            break
-        if found_batch:
-            break
-    if not found_batch:
-        candidates = [
-            node
-            for node in walk(value)
-            if isinstance(node, dict)
-            and message_value(node, "type", "message_type") in MESSAGE_TYPES
-        ]
-
-    messages: list[dict[str, Any]] = []
-    seen: set[tuple[Any, ...]] = set()
-    for node in candidates:
-        kind = message_value(node, "type", "message_type")
-        metadata = message_metadata(node)
-        message_id = message_value(node, "message_id", "id")
-        task_marker = metadata.get("taskId")
-        dispatch_marker = metadata.get("dispatchId")
-        signature = (
-            kind,
-            message_id,
-            compact_json(task_marker)
-            if isinstance(task_marker, (dict, list))
-            else task_marker,
-            compact_json(dispatch_marker)
-            if isinstance(dispatch_marker, (dict, list))
-            else dispatch_marker,
-            None if message_id is not None else compact_json(node),
-        )
-        if signature in seen:
-            continue
-        seen.add(signature)
-        messages.append(node)
-    return messages
-
-
-def worker_for_message(
-    state: dict[str, Any], task_id: Any, dispatch_id: Any
-) -> dict[str, Any] | None:
-    if isinstance(dispatch_id, str):
-        for record in state.get("workers", []):
-            if record.get("dispatch_id") == dispatch_id:
-                return record
-    if isinstance(task_id, str):
-        for record in state.get("workers", []):
-            if record.get("task_id") == task_id:
-                return record
-    return None
-
-
 MAX_REPORT_FILE_BYTES = 262_144
 
 
-def load_report_file(raw_path: str) -> Any:
-    path = Path(raw_path)
-    if not path.is_absolute():
-        return None
+def read_incoming_report(path: Path) -> tuple[Any, str | None]:
     try:
         if path.stat().st_size > MAX_REPORT_FILE_BYTES:
-            return None
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-
-
-def extract_report(node: dict[str, Any]) -> Any:
-    payload = decoded_message_payload(node)
-    nested = decode_json(payload.get("report"))
-    if isinstance(nested, dict):
-        return nested
-    if "reportSchemaVersion" in payload:
-        return payload
-    body = decode_json(message_value(node, "body"))
-    if isinstance(body, dict) and "reportSchemaVersion" in body:
-        return body
-    for source in (payload, node):
-        path_value = message_value(source, "report_path", "reportPath")
-        if isinstance(path_value, str) and path_value.strip():
-            file_report = load_report_file(path_value.strip())
-            if isinstance(file_report, dict):
-                return file_report
-    return None
+            return None, f"report file exceeds {MAX_REPORT_FILE_BYTES} bytes"
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        return None, str(exc)
+    try:
+        return json.loads(text), None
+    except json.JSONDecodeError as exc:
+        return None, f"invalid JSON: {exc}"
 
 
 def validate_report(report: Any, role: str) -> list[str]:
@@ -2358,8 +2039,8 @@ def validate_report(report: Any, role: str) -> list[str]:
     errors: list[str] = []
     if report.get("reportSchemaVersion") != REPORT_VERSION:
         errors.append(f"reportSchemaVersion must be {REPORT_VERSION}")
-    if report.get("taskStatus") not in {"done", "blocked"}:
-        errors.append("taskStatus must be done or blocked")
+    if report.get("taskStatus") not in {"done", "failed", "blocked"}:
+        errors.append("taskStatus must be done, failed, or blocked")
     summary = report.get("summary")
     if not isinstance(summary, str) or not summary.strip():
         errors.append("summary must be a non-empty string")
@@ -2424,6 +2105,15 @@ def validate_report(report: Any, role: str) -> list[str]:
             errors.append("leanness must be an integer from 1 to 10")
     if role == "fixer" and not isinstance(report.get("fixed"), list):
         errors.append("fixed must be an array")
+    question = report.get("question")
+    if question is not None and (
+        not isinstance(question, str)
+        or not question.strip()
+        or len(question) > 500
+    ):
+        errors.append("question must be a non-empty string of at most 500 characters")
+    if report.get("taskStatus") == "blocked" and not question:
+        errors.append("a blocked report needs a question")
     prompt_feedback = report.get("promptFeedback")
     if prompt_feedback is not None:
         if not isinstance(prompt_feedback, list) or len(prompt_feedback) > 3:
@@ -2470,285 +2160,221 @@ def validate_report(report: Any, role: str) -> list[str]:
     return errors
 
 
-def completion_acceptance(
-    metadata: dict[str, Any], record: dict[str, Any] | None
-) -> tuple[bool, str | None]:
-    explicit = metadata.get("accepted")
-    rejection = metadata.get("rejectionCode")
-    if explicit is False or isinstance(rejection, str):
-        return False, rejection if isinstance(rejection, str) else "rejected"
-    conflict = metadata.get("conflict")
-    if isinstance(conflict, str):
-        return False, conflict
-    if record is None:
-        return False, "unknown_dispatch"
-    task_id = metadata.get("taskId")
-    dispatch_id = metadata.get("dispatchId")
-    if task_id != record.get("task_id"):
-        return False, "task_identity_mismatch"
-    if dispatch_id != record.get("dispatch_id"):
-        return False, "dispatch_identity_mismatch"
-    if metadata.get("outcome") not in {"succeeded", "failed"}:
-        return False, "invalid_outcome"
-    return True, None
+def scan_incoming_reports(directory: Path) -> tuple[list[dict[str, Any]], int]:
+    """Process new or changed report files; return (messages, actionable count)."""
+    state = read_wave_state(directory)
+    messages: list[dict[str, Any]] = []
+    actions = 0
+    for record in state["workers"]:
+        worker_id = record["worker_id"]
+        index = record["index"]
+        path = worker_report_path(directory, worker_id)
+        if not path.exists():
+            continue
+        try:
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        except OSError as exc:
+            messages.append({"workerId": worker_id, "error": str(exc)})
+            actions += 1
+            continue
+        if digest == record.get("report_sha"):
+            continue
+        report, read_error = read_incoming_report(path)
+        message: dict[str, Any] = {"workerId": worker_id, "reportFile": str(path)}
+        if read_error or not isinstance(report, dict):
+            update_worker_state(
+                directory,
+                index,
+                report_sha=digest,
+                report_status="invalid",
+                error=read_error or "report is not a JSON object",
+            )
+            message.update(
+                {
+                    "reportStatus": "invalid",
+                    "error": read_error or "report is not a JSON object",
+                }
+            )
+            actions += 1
+            messages.append(message)
+            continue
+        settled_before = (
+            record.get("task_status") in {"done", "failed"}
+            and record.get("report_status") == "valid"
+        )
+        if settled_before:
+            # A finished worker's file changed. Never replace the accepted
+            # report; surface the change for Sol instead.
+            update_worker_state(directory, index, report_sha=digest)
+            message.update({"changedAfterDone": True})
+            actions += 1
+            messages.append(message)
+            continue
+        errors = validate_report(report, record.get("role", ""))
+        raw_task_status = report.get("taskStatus")
+        task_status = raw_task_status if isinstance(raw_task_status, str) else None
+        raw_verdict = report.get("verdict")
+        verdict = raw_verdict if isinstance(raw_verdict, str) else None
+        raw_question = report.get("question")
+        question = raw_question if isinstance(raw_question, str) else None
+        raw_summary = report.get("summary")
+        summary = raw_summary if isinstance(raw_summary, str) else ""
+        stored = directory / "reports" / f"{worker_id}.json"
+        save_json(
+            stored,
+            {
+                "accepted": not errors,
+                "validationErrors": errors,
+                "report": report,
+            },
+        )
+        update_worker_state(
+            directory,
+            index,
+            report_sha=digest,
+            report_status="valid" if not errors else "invalid",
+            task_status=task_status,
+            verdict=verdict,
+            question=question,
+            start_status="completed"
+            if task_status in {"done", "failed"}
+            else ("blocked" if task_status == "blocked" else record.get("start_status")),
+            error=None,
+        )
+        message.update(
+            {
+                "taskStatus": task_status,
+                "verdict": verdict,
+                "question": question,
+                "summary": summary[:MAX_BODY_OUTPUT_CHARS],
+                "truncated": len(summary) > MAX_BODY_OUTPUT_CHARS,
+                "reportErrors": errors,
+                "report": str(stored),
+            }
+        )
+        if (
+            errors
+            or task_status in {"blocked", "failed"}
+            or question
+            or verdict in {"FAIL", "UNKNOWN", "BLOCKED"}
+        ):
+            actions += 1
+        messages.append({k: v for k, v in message.items() if v is not None})
+    return messages, actions
 
 
-def release_worker(directory: Path, record: dict[str, Any]) -> dict[str, Any]:
-    if record.get("release_status") == "released":
-        return {"status": "already_released"}
-    dispatch_id = record.get("dispatch_id")
-    if not dispatch_id:
-        update_worker_state(directory, record["index"], release_status="release_failed")
-        return {"status": "release_failed", "error": "missing dispatch ID"}
-    returncode, receipt, detail = call_orca(
-        ["orchestration", "worker-release", "--dispatch", dispatch_id, "--json"]
+def command_collect_reports(args: argparse.Namespace) -> int:
+    """Read every new or changed report file; never wait for future ones."""
+    directory = receipt_dir(args.receipt_dir)
+    read_wave_state(directory)
+    messages, actions = scan_incoming_reports(directory)
+    # Close the publication race: a worker may have written its file after the
+    # scan while the wake marker still existed.
+    clear_notification(directory)
+    late_messages, late_actions = scan_incoming_reports(directory)
+    messages.extend(late_messages)
+    actions += late_actions
+    latest = read_wave_state(directory)
+    settled = wave_settled(latest)
+    status = (
+        "wave_settled"
+        if settled
+        else ("action_required" if actions else "idle_push_mode")
     )
-    path = directory / "releases" / f"{record['worker_id']}.json"
+    print(
+        compact_json(
+            {
+                "status": status,
+                "messages": messages,
+                "workers": wave_records(latest),
+                "next": (
+                    "run finalize-wave"
+                    if settled
+                    else (
+                        "handle each actionable message (answer questions with "
+                        "the answer command), then return to idle"
+                        if actions
+                        else "return to idle until the next wake"
+                    )
+                ),
+                "receipts": str(directory),
+            }
+        )
+    )
+    return 0
+
+
+def command_answer(args: argparse.Namespace) -> int:
+    """Send Sol's answer into the blocked worker's own terminal session."""
+    directory = receipt_dir(args.receipt_dir)
+    state = read_wave_state(directory)
+    record = next(
+        (
+            worker
+            for worker in state["workers"]
+            if worker["worker_id"] == args.worker
+        ),
+        None,
+    )
+    if record is None:
+        raise HelperError(f"no worker {args.worker!r} in this wave")
+    handle = record.get("terminal_handle")
+    if not handle:
+        raise HelperError(f"worker {args.worker} has no terminal")
+    answer_file = Path(args.file).expanduser()
+    if not answer_file.is_absolute() or not answer_file.exists():
+        raise HelperError("answer --file must be an existing absolute path")
+    pointer = (
+        f"Your question was answered. Read the file {answer_file} and continue "
+        "the same task. When finished, write the final report to your report "
+        "file and run the wake command again."
+    )
+    returncode, receipt, detail = call_orca(
+        [
+            "terminal",
+            "send",
+            "--terminal",
+            handle,
+            "--text",
+            pointer,
+            "--enter",
+            "--json",
+        ]
+    )
     save_json(
-        path,
+        directory / "answers" / f"{time.time_ns()}-{record['worker_id']}.json",
         receipt
         if receipt is not None
         else {"returncode": returncode, "detail": detail},
     )
-    status = "released" if returncode == 0 else "release_failed"
+    if returncode != 0:
+        raise HelperError(f"answer delivery failed: {detail}")
     update_worker_state(
         directory,
         record["index"],
-        release_status=status,
-        **({} if returncode == 0 else {"error": detail}),
+        start_status="running",
+        task_status=None,
+        question=None,
+        answers=record.get("answers", 0) + 1,
+        notification_status="pending",
     )
-    return {
-        "status": status,
-        "receipt": str(path),
-        **({} if returncode == 0 else {"error": detail}),
-    }
-
-
-def normalize_message(
-    directory: Path, node: dict[str, Any], ordinal: int
-) -> dict[str, Any]:
-    state = read_wave_state(directory)
-    kind = message_value(node, "type", "message_type") or "unknown"
-    message_id = message_value(node, "message_id", "id")
-    metadata = message_metadata(node)
-    task_id = metadata.get("taskId")
-    dispatch_id = metadata.get("dispatchId")
-    record = worker_for_message(state, task_id, dispatch_id)
-    body = message_value(node, "body")
-    body_text = (
-        body
-        if isinstance(body, str)
-        else compact_json(body)
-        if body is not None
-        else ""
+    print(
+        compact_json(
+            {
+                "status": "answered",
+                "workerId": record["worker_id"],
+                "next": "return to idle; the worker wakes you with its final report",
+            }
+        )
     )
-    truncated = len(body_text) > MAX_BODY_OUTPUT_CHARS
-    summary = body_text[:MAX_BODY_OUTPUT_CHARS]
-    report_path: str | None = None
-    verdict: str | None = None
-    task_status: str | None = None
-    accepted: bool | None = None
-    rejection_code: str | None = None
-    report_errors: list[str] = []
-    release: dict[str, Any] | None = None
-    duplicate = False
-    repaired = False
-    misdirected = False
-
-    if kind == "worker_done":
-        accepted, rejection_code = completion_acceptance(metadata, record)
-        # A completion for an already-accepted worker must never overwrite the
-        # journaled report or state; re-delivered mail is normalized read-only.
-        # The one exception is report repair: matching identity and outcome with
-        # a valid report may replace an invalid journaled report, because the
-        # first accepted completion can be a malformed probe (wave13).
-        duplicate = bool(record) and record.get("completion_accepted") is True
-        report = extract_report(node)
-        role = record.get("role") if record else ""
-        report_errors = validate_report(report, role)
-        repaired = (
-            duplicate
-            and accepted
-            and not report_errors
-            and record.get("report_status") == "invalid"
-            and metadata.get("outcome") == record.get("task_outcome")
-        )
-        if isinstance(report, dict):
-            task_status_value = report.get("taskStatus")
-            task_status = (
-                task_status_value if isinstance(task_status_value, str) else None
-            )
-            verdict_value = report.get("verdict")
-            verdict = verdict_value if isinstance(verdict_value, str) else None
-            report_summary = report.get("summary")
-            if isinstance(report_summary, str):
-                truncated = len(report_summary) > MAX_BODY_OUTPUT_CHARS
-                summary = report_summary[:MAX_BODY_OUTPUT_CHARS]
-            if not duplicate or repaired:
-                if record:
-                    report_file = directory / "reports" / f"{record['worker_id']}.json"
-                else:
-                    report_file = (
-                        directory
-                        / "reports"
-                        / (
-                            safe_receipt_name(message_id, f"unknown-{ordinal}")
-                            + ".json"
-                        )
-                    )
-                save_json(
-                    report_file,
-                    {
-                        "accepted": accepted,
-                        "validationErrors": report_errors,
-                        "report": report,
-                    },
-                )
-                report_path = str(report_file)
-        if record and not duplicate:
-            outcome = metadata.get("outcome")
-            changes = {
-                "start_status": "completed" if accepted else record.get("start_status"),
-                "lifecycle_status": outcome if accepted else "rejected",
-                "completion_accepted": accepted,
-                "task_outcome": outcome,
-                "report_status": "valid" if not report_errors else "invalid",
-                "verdict": verdict,
-            }
-            update_worker_state(directory, record["index"], **changes)
-            if accepted:
-                record = read_wave_state(directory)["workers"][record["index"] - 1]
-                release = release_worker(directory, record)
-                if wave_settled(read_wave_state(directory)):
-                    set_wave_phase(directory, "awaiting_finalize")
-        elif record and repaired:
-            update_worker_state(
-                directory,
-                record["index"],
-                report_status="valid",
-                verdict=verdict,
-            )
-    elif kind == "status":
-        # A structured report inside status mail is a junior contract violation
-        # (wave14): journal it as side evidence and surface it, but it never
-        # becomes validated completion evidence.
-        side_report = extract_report(node)
-        if isinstance(side_report, dict):
-            misdirected = True
-            owner = (
-                record["worker_id"]
-                if record
-                else safe_receipt_name(message_id, f"status-{ordinal}")
-            )
-            side_path = directory / "reports" / f"{owner}.status-{ordinal}.json"
-            save_json(side_path, {"source": "status_message", "report": side_report})
-            report_path = str(side_path)
-    elif kind == "question":
-        question_file = (
-            directory
-            / "questions"
-            / (safe_receipt_name(message_id, f"question-{ordinal}") + ".json")
-        )
-        save_json(question_file, node)
-
-    normalized = {
-        "type": kind,
-        "messageId": message_id,
-        "taskId": task_id,
-        "dispatchId": dispatch_id,
-        "outcome": metadata.get("outcome"),
-        "phase": metadata.get("phase"),
-        "accepted": accepted,
-        "rejectionCode": rejection_code,
-        "expectedTaskId": record.get("task_id") if record else None,
-        "expectedDispatchId": record.get("dispatch_id") if record else None,
-        "verdict": verdict,
-        "taskStatus": task_status,
-        "summary": summary,
-        "truncated": truncated,
-        "duplicate": duplicate or None,
-        "repairedReport": repaired or None,
-        "misdirectedReport": misdirected or None,
-        "reportPath": report_path,
-        "reportErrors": report_errors if kind == "worker_done" else None,
-        "release": release,
-    }
-    return {key: value for key, value in normalized.items() if value is not None}
-
-
-def process_delivery(directory: Path, receipt: Any, source: str) -> dict[str, Any]:
-    ensure_journal(directory)
-    delivery_id = find_entity_id(receipt, "delivery")
-    fallback = f"{source}-{time.time_ns()}"
-    receipt_name = safe_receipt_name(delivery_id, fallback)
-    raw_path = directory / "deliveries" / f"{receipt_name}.raw.json"
-    save_json(raw_path, receipt)
-    messages = [
-        normalize_message(directory, node, ordinal)
-        for ordinal, node in enumerate(message_nodes(receipt), start=1)
-    ]
-    normalized = {
-        "deliveryId": delivery_id,
-        "source": source,
-        "count": len(messages),
-        "messages": messages,
-        "rawReceipt": str(raw_path),
-    }
-    normalized_path = directory / "deliveries" / f"{receipt_name}.json"
-    save_json(normalized_path, normalized)
-    normalized["receipt"] = str(normalized_path)
-    return normalized
-
-
-def delivery_actions(delivery: dict[str, Any]) -> list[dict[str, Any]]:
-    """Return only messages that require Sol policy before acknowledgment."""
-    actions: list[dict[str, Any]] = []
-    for message in delivery.get("messages", []):
-        kind = message.get("type")
-        if kind in {"question", "escalation"}:
-            actions.append(message)
-            continue
-        if kind == "worker_done":
-            lifecycle_failed = message.get("outcome") == "failed"
-            rejected = message.get("accepted") is not True
-            invalid_report = bool(message.get("reportErrors"))
-            release_failed = isinstance(message.get("release"), dict) and message[
-                "release"
-            ].get("status") not in {
-                "released",
-                "already_released",
-            }
-            material_verdict = message.get("verdict") in {
-                "FAIL",
-                "UNKNOWN",
-                "BLOCKED",
-            }
-            content_blocked = message.get("taskStatus") == "blocked"
-            if any(
-                (
-                    lifecycle_failed,
-                    rejected,
-                    invalid_report,
-                    release_failed,
-                    material_verdict,
-                    content_blocked,
-                )
-            ):
-                actions.append(message)
-            continue
-        if kind == "status" and message.get("misdirectedReport"):
-            actions.append(message)
-            continue
-        if kind not in {"heartbeat", "status"}:
-            actions.append(message)
-    return actions
+    return 0
 
 
 def wave_settled(state: dict[str, Any]) -> bool:
     workers = state.get("workers", [])
     return bool(workers) and all(
-        worker.get("completion_accepted") is True
-        and worker.get("release_status") == "released"
+        worker.get("task_status") in {"done", "failed"}
+        and worker.get("report_status") == "valid"
         for worker in workers
     )
 
@@ -2765,114 +2391,6 @@ def clear_notification(directory: Path) -> bool:
     return True
 
 
-def command_drain_deliveries(args: argparse.Namespace) -> int:
-    """Drain currently queued Deliveries without waiting for future messages."""
-    directory = receipt_dir(args.receipt_dir)
-    state = read_wave_state(directory)
-    run_id = require_string(state.get("run_id"), "wave.run_id")
-    pending_ack = getattr(args, "ack", None)
-    batches = 0
-    processed: list[dict[str, Any]] = []
-    race_close_needed = notification_path(directory).exists()
-
-    while batches < 100:
-        arguments = ["orchestration", "check", "--run", run_id]
-        if pending_ack:
-            arguments.extend(["--ack", pending_ack])
-        arguments.append("--json")
-        receipt = run_orca(arguments)
-        delivery = process_delivery(directory, receipt, "drain")
-        batches += 1
-        pending_ack = None
-
-        if delivery["count"] == 0:
-            if race_close_needed:
-                clear_notification(directory)
-                race_close_needed = False
-                # Close the coalescing race once: a worker may have published after
-                # the empty check while the notification marker still existed.
-                continue
-            latest = read_wave_state(directory)
-            settled = wave_settled(latest)
-            print(
-                compact_json(
-                    {
-                        "status": "wave_settled" if settled else "idle_push_mode",
-                        "batches": batches,
-                        "messages": processed,
-                        "workers": wave_records(latest),
-                        "next": (
-                            "run finalize-wave"
-                            if settled
-                            else "return to idle; do not call wait or drain again until Orca queues a new controller notification"
-                        ),
-                        "receipts": str(directory),
-                    }
-                )
-            )
-            return 0
-
-        processed.extend(delivery["messages"])
-        actions = delivery_actions(delivery)
-        if actions:
-            print(
-                compact_json(
-                    {
-                        "status": "action_required",
-                        "deliveryId": delivery.get("deliveryId"),
-                        "ackRequired": bool(delivery.get("deliveryId")),
-                        "messages": actions,
-                        "receipt": delivery.get("receipt"),
-                        "next": "handle every actionable message, then run drain-deliveries --ack <deliveryId>; return to push-idle afterward",
-                    }
-                )
-            )
-            return 0
-
-        delivery_id = delivery.get("deliveryId")
-        if not delivery_id:
-            raise HelperError(
-                "non-empty Delivery omitted deliveryId; refusing to acknowledge"
-            )
-        pending_ack = delivery_id
-
-    raise HelperError("drain exceeded 100 immediately available Delivery batches")
-
-
-def command_ack_delivery(args: argparse.Namespace) -> int:
-    directory = receipt_dir(args.receipt_dir)
-    state = read_wave_state(directory)
-    run_id = require_string(state.get("run_id"), "wave.run_id")
-    arguments = [
-        "orchestration",
-        "check",
-        "--run",
-        run_id,
-        "--ack",
-        args.delivery,
-    ]
-    arguments.append("--json")
-    receipt = run_orca(arguments)
-    print(compact_json(process_delivery(directory, receipt, "ack")))
-    return 0
-
-
-def task_status_map(receipt: Any) -> dict[str, str]:
-    statuses: dict[str, str] = {}
-    for node in walk(receipt):
-        if not isinstance(node, dict):
-            continue
-        task_id = message_value(node, "task_id", "id")
-        status = message_value(node, "status", "state")
-        if (
-            isinstance(task_id, str)
-            and task_id.startswith("task_")
-            and isinstance(status, str)
-        ):
-            statuses[task_id] = status
-    return statuses
-
-
 def claim_controller_notification(
     directory: Path, worker: dict[str, Any], controller_handle: str
 ) -> bool:
@@ -2881,8 +2399,7 @@ def claim_controller_notification(
         compact_json(
             {
                 "workerId": worker["worker_id"],
-                "taskId": worker.get("task_id"),
-                "dispatchId": worker.get("dispatch_id"),
+                "workerTerminalHandle": worker.get("terminal_handle"),
                 "controllerTerminalHandle": controller_handle,
                 "createdAt": time.time(),
             }
@@ -2901,7 +2418,7 @@ def claim_controller_notification(
 
 
 def command_notify_controller(args: argparse.Namespace) -> int:
-    """Queue one coalesced wake prompt after a worker's lifecycle send settles."""
+    """Worker-only, once per report: queue one coalesced wake prompt for Sol."""
     directory = receipt_dir(args.receipt_dir)
     state = read_wave_state(directory)
     caller = require_string(
@@ -2919,6 +2436,11 @@ def command_notify_controller(args: argparse.Namespace) -> int:
         raise HelperError(
             "notify-controller caller is not a current worker terminal in this wave"
         )
+    report_file = worker_report_path(directory, record["worker_id"])
+    if not report_file.exists():
+        raise HelperError(
+            f"write your report to {report_file} before running notify-controller"
+        )
     if record.get("notification_status") in {"queued", "coalesced"}:
         print(
             compact_json(
@@ -2930,22 +2452,6 @@ def command_notify_controller(args: argparse.Namespace) -> int:
             )
         )
         return 0
-
-    run_id = require_string(state.get("run_id"), "wave.run_id")
-    task_id = require_string(record.get("task_id"), "worker.task_id")
-    task_receipt = run_orca(
-        ["orchestration", "task-list", "--run", run_id, "--brief", "--json"]
-    )
-    task_receipt_path = (
-        directory / "runtime" / f"notify-task-{record['worker_id']}.json"
-    )
-    save_json(task_receipt_path, task_receipt)
-    task_status = task_status_map(task_receipt).get(task_id)
-    if task_status not in {"completed", "failed"}:
-        raise HelperError(
-            "notify-controller must run only after Orca accepts worker_done; "
-            f"Task {task_id} is {task_status or 'unknown'}"
-        )
 
     controller_handle = require_string(
         state.get("controller_terminal_handle"), "wave.controller_terminal_handle"
@@ -2963,22 +2469,22 @@ def command_notify_controller(args: argparse.Namespace) -> int:
         )
         return 0
 
-    drain_command = shlex.join(
+    collect_command = shlex.join(
         [
             "uv",
             "run",
             "--no-project",
             str(Path(__file__).resolve()),
-            "drain-deliveries",
+            "collect-reports",
             "--receipt-dir",
             str(directory),
         ]
     )
     text = (
-        "[ORCA LUNA CYCLE: DELIVERY READY]\n"
-        "A worker queued structured lifecycle mail. Run this once without wait/timeout, "
-        "then follow its `next` field:\n"
-        f"{drain_command}"
+        "[ORCA LUNA CYCLE: REPORTS READY]\n"
+        "A worker wrote its report file. Run this once, then follow its "
+        "next field:\n"
+        f"{collect_command}"
     )
     returncode, receipt, detail = call_orca(
         [
@@ -3006,8 +2512,8 @@ def command_notify_controller(args: argparse.Namespace) -> int:
     else:
         status = classify_failure(receipt)
         # A retained marker after a failed or ambiguous send would coalesce every
-        # later completion into a wake that may never arrive and silently stall the
-        # wave; a duplicate wake is harmless because the drain is idempotent.
+        # later wake into a wake that may never arrive and silently stall the
+        # wave; a duplicate wake is harmless because collect is idempotent.
         clear_notification(directory)
     update_worker_state(directory, record["index"], notification_status=status)
     print(
@@ -3026,16 +2532,12 @@ def command_notify_controller(args: argparse.Namespace) -> int:
 
 
 def exact_launch_proven(record: dict[str, Any]) -> bool:
-    expected = LAUNCH_SPECS.get(record.get("launch"))
-    if expected is None:
+    """The helper spawned the agent itself, so the recorded spawn command is
+    the primary launch proof; the boot banner is secondary evidence only."""
+    spec = LAUNCH_SPECS.get(record.get("launch"))
+    if spec is None:
         return False
-    requested = record.get("launch_requested")
-    effective = record.get("launch_effective")
-    return all(
-        isinstance(value, dict)
-        and all(value.get(key) == item for key, item in expected.items())
-        for value in (requested, effective)
-    )
+    return record.get("spawn_command") == spawn_command(spec)
 
 
 def git_snapshot() -> dict[str, Any]:
@@ -3109,61 +2611,23 @@ def command_finalize_wave(args: argparse.Namespace) -> int:
         raise HelperError(
             "journal manifest changed after dispatch; finalization is unsafe"
         )
-    run_id = require_string(state.get("run_id"), "wave.run_id")
-    task_receipt = run_orca(
-        ["orchestration", "task-list", "--run", run_id, "--brief", "--json"]
-    )
-    save_json(directory / "runtime" / "task-list-final.json", task_receipt)
-    statuses = task_status_map(task_receipt)
-    for record in state.get("workers", []):
-        dispatch_id = record.get("dispatch_id")
-        if dispatch_id:
-            show_receipt = run_orca(
-                ["orchestration", "worker-show", "--dispatch", dispatch_id, "--json"]
-            )
-            save_json(
-                directory / "runtime" / f"worker-{record['worker_id']}.json",
-                show_receipt,
-            )
-        task_id = record.get("task_id")
-        if task_id in statuses:
-            update_worker_state(
-                directory, record["index"], orca_task_status=statuses[task_id]
-            )
-
-    state = read_wave_state(directory)
     workers = state.get("workers", [])
-    ambiguous_statuses = {
-        "creating_task",
-        "starting_worker",
-        "task_outcome_unknown",
-        "worker_outcome_unknown",
-    }
     unresolved = [
         worker["worker_id"]
         for worker in workers
-        if worker.get("start_status") in ambiguous_statuses
+        if worker.get("start_status") in AMBIGUOUS_START_STATUSES
     ]
     checks = {
         "preflightPassed": load_json(directory / "preflight.json").get("status")
         == "passed",
-        "runBound": bool(run_id) and state.get("run_status") == "ready",
-        "allWorkersStarted": all(worker.get("dispatch_id") for worker in workers),
-        "allTasksCompleted": all(
-            worker.get("orca_task_status") == "completed" for worker in workers
-        ),
-        "allCompletionsAccepted": all(
-            worker.get("completion_accepted") is True for worker in workers
-        ),
-        "allLifecycleSucceeded": all(
-            worker.get("lifecycle_status") == "succeeded" for worker in workers
+        "allWorkersSpawned": all(worker.get("terminal_handle") for worker in workers),
+        "allSettled": all(
+            worker.get("task_status") in {"done", "failed"} for worker in workers
         ),
         "allReportsValid": all(
             worker.get("report_status") == "valid" for worker in workers
         ),
-        "allWorkersReleased": all(
-            worker.get("release_status") == "released" for worker in workers
-        ),
+        "noOpenQuestions": all(not worker.get("question") for worker in workers),
         "noPendingControllerWake": not notification_path(directory).exists(),
         "exactLaunchProven": all(exact_launch_proven(worker) for worker in workers),
         "noAmbiguousEffects": not unresolved,
@@ -3183,8 +2647,8 @@ def command_finalize_wave(args: argparse.Namespace) -> int:
     set_wave_phase(directory, "finalized" if mechanical_ok else "finalize_incomplete")
     state = read_wave_state(directory)
     final = {
-        "finalSchemaVersion": 1,
-        "runId": run_id,
+        "finalSchemaVersion": 2,
+        "runId": directory.name,
         "mode": manifest["mode"],
         "launchSpecs": LAUNCH_SPECS,
         "orchestrationHealth": "PASS" if mechanical_ok else "FAIL",
@@ -3250,8 +2714,18 @@ def command_self_test(_: argparse.Namespace) -> int:
     assert ROLE_LAUNCHES["antislop"] == ("sol-xhigh",)
     assert "luna-fast" in ROLE_LAUNCHES["implementer"]
     assert all(launches[0] != "luna-fast" for launches in ROLE_LAUNCHES.values())
-    assert "fast" not in REQUIRED_ORCA_COMMANDS["orchestration worker-start"]
-    assert REQUIRED_ORCA_COMMANDS["orchestration check"] == {"run", "ack", "json"}
+    assert not any(name.startswith("orchestration") for name in REQUIRED_ORCA_COMMANDS)
+    assert REQUIRED_ORCA_COMMANDS["terminal create"] == {
+        "worktree",
+        "title",
+        "command",
+        "json",
+    }
+    assert (
+        spawn_command(LAUNCH_SPECS["luna-max"])
+        == "codex -m gpt-5.6-luna -c model_reasoning_effort=max"
+    )
+    assert '"' not in spawn_command(LAUNCH_SPECS["luna-fast"])
     manifest, workers, prompts = validate_manifest(
         load_json(REFERENCES / "manifest-v2.example.json")
     )
@@ -3268,10 +2742,10 @@ def command_self_test(_: argparse.Namespace) -> int:
         "workers": [{**manifest["workers"][0], "launch": "fable-high"}],
     }
     _, fable_workers, _ = validate_manifest(fable_manifest)
-    start_args = worker_start_args(fable_workers[0], "task_1", "01 scout · x", "run_1")
-    assert start_args[start_args.index("--agent") + 1] == "claude"
-    assert start_args[start_args.index("--model") + 1] == "claude-fable-5"
-    assert start_args[start_args.index("--effort") + 1] == "high"
+    assert (
+        spawn_command(LAUNCH_SPECS[fable_workers[0]["launch"]])
+        == "claude --model claude-fable-5"
+    )
     try:
         validate_manifest(
             {
@@ -3333,12 +2807,10 @@ def command_self_test(_: argparse.Namespace) -> int:
     }
     _, overridden_workers, _ = validate_manifest(overridden)
     assert overridden_workers[0]["launch"] == "luna-fast"
-    fast_args = worker_start_args(
-        overridden_workers[0], "task_fast", "01 implementer · x", "run_1"
-    )
-    assert fast_args[fast_args.index("--model") + 1] == "gpt-5.6-luna"
-    assert fast_args[fast_args.index("--effort") + 1] == "max"
-    assert "--fast" in fast_args
+    fast_command = spawn_command(LAUNCH_SPECS[overridden_workers[0]["launch"]])
+    assert "gpt-5.6-luna" in fast_command
+    assert "model_reasoning_effort=max" in fast_command
+    assert "service_tier=priority" in fast_command
     orphan_worktree = {
         **overridden,
         "workers": [
@@ -3497,9 +2969,16 @@ def command_self_test(_: argparse.Namespace) -> int:
         directory = Path(temporary)
         ensure_journal(directory)
         initialize_wave_state(directory, manifest, workers)
-        update_worker_state(directory, 1, task_id="task_1", start_status="task_created")
-        assert read_wave_state(directory)["workers"][0]["task_id"] == "task_1"
-        update_worker_state(directory, 1, task_id=None, start_status="pending")
+        update_worker_state(
+            directory, 1, terminal_handle="term_1", start_status="running"
+        )
+        assert read_wave_state(directory)["workers"][0]["terminal_handle"] == "term_1"
+        live = runtime_prompt(prompts[0], directory, workers[0]["id"])
+        assert str(worker_report_path(directory, workers[0]["id"])) in live
+        assert "notify-controller" in live
+        update_worker_state(
+            directory, 1, terminal_handle=None, start_status="pending"
+        )
         request_cancel(directory)
         assert cancel_requested(directory)
         assert read_wave_state(directory)["cancel_requested"] is True
@@ -3538,7 +3017,7 @@ def parser() -> argparse.ArgumentParser:
     preflight.set_defaults(func=command_preflight)
 
     dispatch = commands.add_parser(
-        "dispatch-wave", help="create all Tasks, then start all workers"
+        "dispatch-wave", help="write prompts and spawn all worker terminals"
     )
     dispatch.add_argument("--manifest", type=Path, required=True)
     dispatch.add_argument("--receipt-dir", required=False)
@@ -3557,27 +3036,29 @@ def parser() -> argparse.ArgumentParser:
     stop.add_argument("--receipt-dir", required=True)
     stop.set_defaults(func=command_stop_wave)
 
-    drain = commands.add_parser(
-        "drain-deliveries",
-        help="nonblocking drain after an Orca terminal-queue notification",
+    collect = commands.add_parser(
+        "collect-reports",
+        help="read new or changed worker report files; never waits",
     )
-    drain.add_argument("--receipt-dir", required=True)
-    drain.add_argument("--ack", help="ack a processed actionable Delivery first")
-    drain.set_defaults(func=command_drain_deliveries)
+    collect.add_argument("--receipt-dir", required=True)
+    collect.set_defaults(func=command_collect_reports)
+
+    answer = commands.add_parser(
+        "answer", help="send Sol's answer into a blocked worker's terminal"
+    )
+    answer.add_argument("--receipt-dir", required=True)
+    answer.add_argument("--worker", required=True, help="worker ID from the manifest")
+    answer.add_argument(
+        "--file", required=True, help="absolute path to a file with the answer text"
+    )
+    answer.set_defaults(func=command_answer)
 
     notify = commands.add_parser(
         "notify-controller",
-        help="worker-only exactly-once wake after accepted worker_done",
+        help="worker-only exactly-once wake after writing the report file",
     )
     notify.add_argument("--receipt-dir", required=True)
     notify.set_defaults(func=command_notify_controller)
-
-    ack = commands.add_parser(
-        "ack-delivery", help="ack one Delivery and normalize any returned next batch"
-    )
-    ack.add_argument("--receipt-dir", required=True)
-    ack.add_argument("--delivery", required=True)
-    ack.set_defaults(func=command_ack_delivery)
 
     finalize = commands.add_parser(
         "finalize-wave",

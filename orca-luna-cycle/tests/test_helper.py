@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Offline regression tests for the Orca Luna Cycle helper."""
+"""Offline regression tests for the Orca Luna Cycle helper (v2 dispatch)."""
 
 from __future__ import annotations
 
@@ -36,24 +36,7 @@ def valid_report(**extra: object) -> dict[str, object]:
     return report
 
 
-def delivery(payload: dict[str, object], **message: object) -> dict[str, object]:
-    return {
-        "result": {
-            "deliveryId": "delivery_test",
-            "messages": [
-                {
-                    "id": "msg_test",
-                    "type": "worker_done",
-                    "body": "Did the work. Found the result. Nothing remains.",
-                    "payload": json.dumps(payload),
-                    **message,
-                }
-            ],
-        }
-    }
-
-
-class DeliveryTests(unittest.TestCase):
+class CollectTests(unittest.TestCase):
     def setUp(self) -> None:
         self.environment = patch.dict(
             os.environ, {"ORCA_TERMINAL_HANDLE": "term_controller"}
@@ -61,145 +44,211 @@ class DeliveryTests(unittest.TestCase):
         self.environment.start()
         self.temporary = tempfile.TemporaryDirectory(prefix="orca-luna-test-")
         self.directory = Path(self.temporary.name)
-        manifest, workers, _ = helper.validate_manifest(
+        manifest, self.workers, self.prompts = helper.validate_manifest(
             helper.load_json(
                 HELPER_PATH.parents[1] / "references" / "manifest-v2.example.json"
             )
         )
         helper.ensure_journal(self.directory)
         helper.save_json(self.directory / "manifest.json", manifest)
-        helper.initialize_wave_state(self.directory, manifest, workers)
+        helper.initialize_wave_state(self.directory, manifest, self.workers)
+        self.worker_id = self.workers[0]["id"]
         helper.update_worker_state(
             self.directory,
             1,
-            task_id="task_expected",
-            dispatch_id="ctx_expected",
             terminal_handle="term_worker",
+            spawn_command=helper.spawn_command(
+                helper.LAUNCH_SPECS[self.workers[0]["launch"]]
+            ),
             start_status="running",
-        )
-        helper.mutate_wave_state(
-            self.directory,
-            lambda state: state.update({"run_id": "run_test", "run_status": "ready"}),
         )
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
         self.environment.stop()
 
-    def test_worker_done_identity_comes_from_string_payload(self) -> None:
-        payload = valid_report(
-            taskId="task_expected",
-            dispatchId="ctx_expected",
-            outcome="succeeded",
-        )
-        release = {"ok": True, "result": {"state": "released"}}
-        with patch.object(helper, "call_orca", return_value=(0, release, "")):
-            result = helper.process_delivery(self.directory, delivery(payload), "test")
+    def write_incoming(self, report: dict[str, object]) -> Path:
+        path = helper.worker_report_path(self.directory, self.worker_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(report), encoding="utf-8")
+        return path
 
-        message = result["messages"][0]
-        self.assertEqual(message["taskId"], "task_expected")
-        self.assertEqual(message["dispatchId"], "ctx_expected")
-        self.assertEqual(message["outcome"], "succeeded")
-        self.assertTrue(message["accepted"])
-        self.assertEqual(message["reportErrors"], [])
+    def collect(self) -> int:
+        with patch("builtins.print"):
+            return helper.command_collect_reports(
+                Namespace(receipt_dir=str(self.directory))
+            )
+
+    def test_done_report_settles_the_worker(self) -> None:
+        self.write_incoming(valid_report())
+        messages, actions = helper.scan_incoming_reports(self.directory)
+        self.assertEqual(actions, 0)
+        self.assertEqual(messages[0]["taskStatus"], "done")
         state = helper.read_wave_state(self.directory)["workers"][0]
+        self.assertEqual(state["report_status"], "valid")
+        self.assertEqual(state["task_status"], "done")
         self.assertEqual(state["start_status"], "completed")
-        self.assertEqual(state["release_status"], "released")
-
-    def test_identity_conflict_never_releases(self) -> None:
-        payload = valid_report(
-            taskId="task_expected",
-            dispatchId="ctx_expected",
-            outcome="succeeded",
+        stored = helper.load_json(
+            self.directory / "reports" / f"{self.worker_id}.json"
         )
-        with patch.object(helper, "call_orca") as orca:
-            result = helper.process_delivery(
-                self.directory,
-                delivery(payload, taskId="task_wrong"),
-                "test",
-            )
+        self.assertTrue(stored["accepted"])
+        self.assertTrue(helper.wave_settled(helper.read_wave_state(self.directory)))
 
-        message = result["messages"][0]
-        self.assertFalse(message["accepted"])
-        self.assertEqual(message["rejectionCode"], "identity_conflict")
-        orca.assert_not_called()
+    def test_unchanged_report_is_processed_once(self) -> None:
+        self.write_incoming(valid_report())
+        helper.scan_incoming_reports(self.directory)
+        messages, actions = helper.scan_incoming_reports(self.directory)
+        self.assertEqual(messages, [])
+        self.assertEqual(actions, 0)
 
-    def test_report_validation_is_independent_from_identity(self) -> None:
-        payload = valid_report(
-            taskId="task_unknown",
-            dispatchId="ctx_unknown",
-            outcome="succeeded",
+    def test_blocked_report_needs_answer(self) -> None:
+        self.write_incoming(
+            valid_report(taskStatus="blocked", question="Which base branch wins?")
         )
-        result = helper.process_delivery(self.directory, delivery(payload), "test")
-        message = result["messages"][0]
-        self.assertFalse(message["accepted"])
-        self.assertEqual(message["rejectionCode"], "unknown_dispatch")
-        self.assertEqual(message["reportErrors"], [])
+        messages, actions = helper.scan_incoming_reports(self.directory)
+        self.assertEqual(actions, 1)
+        self.assertEqual(messages[0]["question"], "Which base branch wins?")
+        state = helper.read_wave_state(self.directory)["workers"][0]
+        self.assertEqual(state["start_status"], "blocked")
+        self.assertFalse(helper.wave_settled(helper.read_wave_state(self.directory)))
 
-    def test_unknown_message_type_is_preserved(self) -> None:
-        receipt = {
-            "result": {
-                "deliveryId": "delivery_mixed",
-                "messages": [
-                    {
-                        "id": "msg_guidance",
-                        "type": "guidance_v2",
-                        "body": "Keep the bounded scope.",
-                        "payload": "{}",
-                    }
-                ],
-            }
-        }
-        result = helper.process_delivery(self.directory, receipt, "test")
-        self.assertEqual(result["count"], 1)
-        self.assertEqual(result["messages"][0]["type"], "guidance_v2")
+    def test_blocked_without_question_is_invalid(self) -> None:
+        self.write_incoming(valid_report(taskStatus="blocked"))
+        messages, actions = helper.scan_incoming_reports(self.directory)
+        self.assertEqual(actions, 1)
+        self.assertTrue(messages[0]["reportErrors"])
 
-    def test_push_drain_never_uses_wait_or_timeout(self) -> None:
-        empty = {"result": {"messages": []}}
-        with (
-            patch.object(helper, "run_orca", return_value=empty) as orca,
-            patch("builtins.print"),
-        ):
-            result = helper.command_drain_deliveries(
-                Namespace(receipt_dir=str(self.directory), ack=None)
-            )
+    def test_final_report_replaces_a_blocked_one(self) -> None:
+        self.write_incoming(
+            valid_report(taskStatus="blocked", question="Which base branch wins?")
+        )
+        helper.scan_incoming_reports(self.directory)
+        self.write_incoming(valid_report(summary="Finished after the answer."))
+        messages, actions = helper.scan_incoming_reports(self.directory)
+        self.assertEqual(actions, 0)
+        state = helper.read_wave_state(self.directory)["workers"][0]
+        self.assertEqual(state["task_status"], "done")
+        self.assertIsNone(state["question"])
 
-        self.assertEqual(result, 0)
-        arguments = orca.call_args.args[0]
-        self.assertNotIn("--wait", arguments)
-        self.assertNotIn("--timeout-ms", arguments)
+    def test_change_after_done_never_replaces_the_accepted_report(self) -> None:
+        self.write_incoming(valid_report())
+        helper.scan_incoming_reports(self.directory)
+        self.write_incoming(valid_report(summary="Rewritten after completion."))
+        messages, actions = helper.scan_incoming_reports(self.directory)
+        self.assertEqual(actions, 1)
+        self.assertTrue(messages[0].get("changedAfterDone"))
+        stored = helper.load_json(
+            self.directory / "reports" / f"{self.worker_id}.json"
+        )
+        self.assertEqual(stored["report"]["summary"], "Mapped the bounded surface.")
 
-    def test_worker_completion_queues_one_controller_wake(self) -> None:
-        tasks = {"result": {"tasks": [{"id": "task_expected", "status": "completed"}]}}
+    def test_valid_rewrite_repairs_an_invalid_report(self) -> None:
+        path = self.write_incoming(valid_report())
+        path.write_text("not json", encoding="utf-8")
+        messages, actions = helper.scan_incoming_reports(self.directory)
+        self.assertEqual(actions, 1)
+        self.assertEqual(
+            helper.read_wave_state(self.directory)["workers"][0]["report_status"],
+            "invalid",
+        )
+        self.write_incoming(valid_report())
+        messages, actions = helper.scan_incoming_reports(self.directory)
+        self.assertEqual(actions, 0)
+        state = helper.read_wave_state(self.directory)["workers"][0]
+        self.assertEqual(state["report_status"], "valid")
+
+    def test_report_summary_is_clamped(self) -> None:
+        self.write_incoming(valid_report(summary="x" * 10_000))
+        messages, _ = helper.scan_incoming_reports(self.directory)
+        self.assertLessEqual(
+            len(messages[0]["summary"]), helper.MAX_BODY_OUTPUT_CHARS
+        )
+        self.assertTrue(messages[0]["truncated"])
+
+    def test_collect_clears_the_wake_marker(self) -> None:
+        helper.notification_path(self.directory).write_text("{}", encoding="utf-8")
+        self.write_incoming(valid_report())
+        self.assertEqual(self.collect(), 0)
+        self.assertFalse(helper.notification_path(self.directory).exists())
+
+    def test_notify_requires_the_report_file(self) -> None:
+        with patch.dict(os.environ, {"ORCA_TERMINAL_HANDLE": "term_worker"}):
+            with self.assertRaises(helper.HelperError) as context:
+                helper.command_notify_controller(
+                    Namespace(receipt_dir=str(self.directory))
+                )
+        self.assertIn("write your report", str(context.exception))
+
+    def test_notify_queues_one_wake_and_names_collect(self) -> None:
+        self.write_incoming(valid_report())
         queued = {"ok": True, "result": {"queued": True}}
         with (
             patch.dict(os.environ, {"ORCA_TERMINAL_HANDLE": "term_worker"}),
             patch.object(
-                helper,
-                "call_orca",
-                side_effect=[(0, tasks, ""), (0, queued, "")],
+                helper, "call_orca", return_value=(0, queued, "")
             ) as orca,
             patch("builtins.print"),
         ):
             result = helper.command_notify_controller(
                 Namespace(receipt_dir=str(self.directory))
             )
-
         self.assertEqual(result, 0)
-        send_arguments = orca.call_args_list[1].args[0]
+        send_arguments = orca.call_args.args[0]
         self.assertEqual(send_arguments[:2], ["terminal", "send"])
         self.assertIn("term_controller", send_arguments)
-        self.assertNotIn("--wait", send_arguments)
-        self.assertTrue((self.directory / helper.NOTIFICATION_FILE).exists())
+        self.assertIn("collect-reports", " ".join(send_arguments))
+        self.assertTrue(helper.notification_path(self.directory).exists())
         worker = helper.read_wave_state(self.directory)["workers"][0]
         self.assertEqual(worker["notification_status"], "queued")
 
-    def test_live_prompt_bundles_wake_after_worker_done(self) -> None:
-        prompt = helper.runtime_prompt("ROLE: IMPLEMENTER\n", self.directory)
+    def test_failed_wake_send_clears_the_coalescing_marker(self) -> None:
+        self.write_incoming(valid_report())
+        failed_send = {"ok": False, "error": {"state": "unknown"}}
+        with (
+            patch.dict(os.environ, {"ORCA_TERMINAL_HANDLE": "term_worker"}),
+            patch.object(helper, "call_orca", return_value=(1, failed_send, "boom")),
+            patch("builtins.print"),
+        ):
+            helper.command_notify_controller(Namespace(receipt_dir=str(self.directory)))
+        self.assertFalse(helper.notification_path(self.directory).exists())
+
+    def test_answer_reengages_the_same_terminal(self) -> None:
+        self.write_incoming(
+            valid_report(taskStatus="blocked", question="Which base branch wins?")
+        )
+        helper.scan_incoming_reports(self.directory)
+        answer_file = self.directory / "sol-answer.txt"
+        answer_file.write_text("Use main.", encoding="utf-8")
+        sent = {"ok": True, "result": {"sent": True}}
+        with (
+            patch.object(helper, "call_orca", return_value=(0, sent, "")) as orca,
+            patch("builtins.print"),
+        ):
+            result = helper.command_answer(
+                Namespace(
+                    receipt_dir=str(self.directory),
+                    worker=self.worker_id,
+                    file=str(answer_file),
+                )
+            )
+        self.assertEqual(result, 0)
+        send_arguments = orca.call_args.args[0]
+        self.assertIn("term_worker", send_arguments)
+        self.assertIn(str(answer_file), " ".join(send_arguments))
+        state = helper.read_wave_state(self.directory)["workers"][0]
+        self.assertEqual(state["start_status"], "running")
+        self.assertIsNone(state["question"])
+        self.assertEqual(state["answers"], 1)
+        self.assertEqual(state["notification_status"], "pending")
+
+    def test_runtime_prompt_names_report_file_and_wake(self) -> None:
+        prompt = helper.runtime_prompt("ROLE: SCOUT\n", self.directory, self.worker_id)
+        self.assertIn(
+            str(helper.worker_report_path(self.directory, self.worker_id)), prompt
+        )
         self.assertIn("notify-controller", prompt)
-        self.assertIn("append this with", prompt)
+        self.assertIn("runtime/helper.py", prompt)
         self.assertNotIn("--wait", prompt)
-        self.assertIn(str(self.directory / "runtime" / "helper.py"), prompt)
 
     def test_foreign_helper_build_is_refused_with_archived_path(self) -> None:
         helper.mutate_wave_state(
@@ -209,166 +258,6 @@ class DeliveryTests(unittest.TestCase):
         with self.assertRaises(helper.HelperError) as context:
             helper.read_wave_state(self.directory)
         self.assertIn("runtime/helper.py", str(context.exception))
-
-    def test_duplicate_completion_never_mutates_accepted_state(self) -> None:
-        payload = valid_report(
-            taskId="task_expected", dispatchId="ctx_expected", outcome="succeeded"
-        )
-        release = {"ok": True, "result": {"state": "released"}}
-        with patch.object(helper, "call_orca", return_value=(0, release, "")):
-            helper.process_delivery(self.directory, delivery(payload), "test")
-        conflicting = valid_report(
-            taskId="task_expected",
-            dispatchId="ctx_expected",
-            outcome="failed",
-            summary="Conflicting duplicate.",
-        )
-        with patch.object(helper, "call_orca") as orca:
-            result = helper.process_delivery(
-                self.directory, delivery(conflicting), "test"
-            )
-        message = result["messages"][0]
-        self.assertTrue(message.get("duplicate"))
-        orca.assert_not_called()
-        state = helper.read_wave_state(self.directory)["workers"][0]
-        self.assertEqual(state["lifecycle_status"], "succeeded")
-        report = helper.load_json(self.directory / "reports" / "plan-map.json")
-        self.assertEqual(report["report"]["summary"], "Mapped the bounded surface.")
-
-    def test_valid_duplicate_repairs_invalid_journaled_report(self) -> None:
-        probe = {
-            "taskId": "task_expected",
-            "dispatchId": "ctx_expected",
-            "outcome": "succeeded",
-            "reportSchemaVersion": 1,
-        }
-        release = {"ok": True, "result": {"state": "released"}}
-        with patch.object(helper, "call_orca", return_value=(0, release, "")):
-            helper.process_delivery(self.directory, delivery(probe), "test")
-        state = helper.read_wave_state(self.directory)["workers"][0]
-        self.assertEqual(state["report_status"], "invalid")
-        real = valid_report(
-            taskId="task_expected", dispatchId="ctx_expected", outcome="succeeded"
-        )
-        with patch.object(helper, "call_orca") as orca:
-            result = helper.process_delivery(self.directory, delivery(real), "test")
-        message = result["messages"][0]
-        self.assertTrue(message.get("repairedReport"))
-        orca.assert_not_called()
-        state = helper.read_wave_state(self.directory)["workers"][0]
-        self.assertEqual(state["report_status"], "valid")
-        self.assertEqual(state["lifecycle_status"], "succeeded")
-        report = helper.load_json(self.directory / "reports" / "plan-map.json")
-        self.assertEqual(report["report"]["summary"], "Mapped the bounded surface.")
-
-    def test_status_message_report_is_journaled_and_flagged(self) -> None:
-        receipt = {
-            "result": {
-                "deliveryId": "delivery_status",
-                "messages": [
-                    {
-                        "id": "msg_status",
-                        "type": "status",
-                        "body": "Interim.",
-                        "payload": json.dumps(
-                            valid_report(
-                                taskId="task_expected", dispatchId="ctx_expected"
-                            )
-                        ),
-                    }
-                ],
-            }
-        }
-        result = helper.process_delivery(self.directory, receipt, "test")
-        message = result["messages"][0]
-        self.assertTrue(message.get("misdirectedReport"))
-        self.assertIn(".status-", message["reportPath"])
-        self.assertTrue(Path(message["reportPath"]).exists())
-        self.assertEqual(helper.delivery_actions(result), [message])
-        state = helper.read_wave_state(self.directory)["workers"][0]
-        self.assertIsNone(state["completion_accepted"])
-
-    def test_flags_only_completion_with_report_file_is_accepted(self) -> None:
-        report_file = self.directory / "flags-report.json"
-        report_file.write_text(json.dumps(valid_report()), encoding="utf-8")
-        receipt = {
-            "result": {
-                "deliveryId": "delivery_flags",
-                "messages": [
-                    {
-                        "id": "msg_flags",
-                        "type": "worker_done",
-                        "body": "Did the work. Found the result. Nothing remains.",
-                        "taskId": "task_expected",
-                        "dispatchId": "ctx_expected",
-                        "outcome": "succeeded",
-                        "reportPath": str(report_file),
-                    }
-                ],
-            }
-        }
-        release = {"ok": True, "result": {"state": "released"}}
-        with patch.object(helper, "call_orca", return_value=(0, release, "")):
-            result = helper.process_delivery(self.directory, receipt, "test")
-        message = result["messages"][0]
-        self.assertTrue(message["accepted"])
-        self.assertEqual(message["reportErrors"], [])
-        state = helper.read_wave_state(self.directory)["workers"][0]
-        self.assertEqual(state["report_status"], "valid")
-        self.assertEqual(state["release_status"], "released")
-
-    def test_report_path_file_is_ingested(self) -> None:
-        report_file = self.directory / "side-report.json"
-        report_file.write_text(json.dumps(valid_report()), encoding="utf-8")
-        payload = {
-            "taskId": "task_expected",
-            "dispatchId": "ctx_expected",
-            "outcome": "succeeded",
-            "reportPath": str(report_file),
-        }
-        release = {"ok": True, "result": {"state": "released"}}
-        with patch.object(helper, "call_orca", return_value=(0, release, "")):
-            result = helper.process_delivery(self.directory, delivery(payload), "test")
-        message = result["messages"][0]
-        self.assertTrue(message["accepted"])
-        self.assertEqual(message["reportErrors"], [])
-        state = helper.read_wave_state(self.directory)["workers"][0]
-        self.assertEqual(state["report_status"], "valid")
-
-    def test_long_report_summary_is_accepted_but_delivery_preview_is_clamped(
-        self,
-    ) -> None:
-        payload = valid_report(
-            taskId="task_expected",
-            dispatchId="ctx_expected",
-            outcome="succeeded",
-            summary="x" * 10_000,
-        )
-        release = {"ok": True, "result": {"state": "released"}}
-        with patch.object(helper, "call_orca", return_value=(0, release, "")):
-            result = helper.process_delivery(self.directory, delivery(payload), "test")
-        message = result["messages"][0]
-        self.assertTrue(message["accepted"])
-        self.assertEqual(message["reportErrors"], [])
-        self.assertLessEqual(len(message["summary"]), helper.MAX_BODY_OUTPUT_CHARS)
-        self.assertTrue(message["truncated"])
-        state = helper.read_wave_state(self.directory)["workers"][0]
-        self.assertEqual(state["report_status"], "valid")
-
-    def test_failed_wake_send_clears_the_coalescing_marker(self) -> None:
-        tasks = {"result": {"tasks": [{"id": "task_expected", "status": "completed"}]}}
-        failed_send = {"ok": False, "error": {"state": "unknown"}}
-        with (
-            patch.dict(os.environ, {"ORCA_TERMINAL_HANDLE": "term_worker"}),
-            patch.object(
-                helper,
-                "call_orca",
-                side_effect=[(0, tasks, ""), (1, failed_send, "send failed")],
-            ),
-            patch("builtins.print"),
-        ):
-            helper.command_notify_controller(Namespace(receipt_dir=str(self.directory)))
-        self.assertFalse((self.directory / helper.NOTIFICATION_FILE).exists())
 
 
 class LearnedRuleTests(unittest.TestCase):
@@ -390,21 +279,6 @@ class LearnedRuleTests(unittest.TestCase):
         _, _, prompts = helper.validate_manifest(manifest)
         self.assertIn("KNOWN FAILURE MODES RELEVANT TO THIS SCOPE", prompts[0])
         self.assertIn("[producer-proxy]", prompts[0])
-
-    def test_dirty_state_preserves_git_porcelain_columns(self) -> None:
-        manifest = {
-            **self.manifest,
-            "envelope": {
-                **self.manifest["envelope"],
-                "dirtyState": [" M skills-lock.json", "?? untracked/"],
-            },
-        }
-        normalized, _, prompts = helper.validate_manifest(manifest)
-        self.assertEqual(
-            normalized["envelope"]["dirtyState"],
-            [" M skills-lock.json", "?? untracked/"],
-        )
-        self.assertIn('" M skills-lock.json"', prompts[0])
 
     def test_known_failure_modes_caps_are_enforced(self) -> None:
         for bad in (
@@ -460,7 +334,7 @@ class LearnedRuleTests(unittest.TestCase):
         self.assertIn("- plain string finding", prompts[0])
         self.assertNotIn('"severity"', prompts[0].split("REPORT")[0])
 
-    def test_prompt_feedback_validates_in_delivered_reports(self) -> None:
+    def test_prompt_feedback_validates_in_reports(self) -> None:
         good = valid_report(
             promptFeedback=[
                 {
@@ -516,89 +390,29 @@ class LaunchPolicyTests(unittest.TestCase):
         _, workers, _ = helper.validate_manifest(self.manifest)
         self.assertEqual(workers[0]["launch"], "luna-max")
 
-    def test_fable_high_launches_claude_agent(self) -> None:
-        manifest = {
-            **self.manifest,
-            "workers": [{**self.manifest["workers"][0], "launch": "fable-high"}],
-        }
-        _, workers, _ = helper.validate_manifest(manifest)
-        args = helper.worker_start_args(workers[0], "task_1", "label", "run_1")
-        self.assertEqual(args[args.index("--agent") + 1], "claude")
-        self.assertEqual(args[args.index("--model") + 1], "claude-fable-5")
-        self.assertEqual(args[args.index("--effort") + 1], "high")
-
-    def test_luna_fast_keeps_the_base_model_and_uses_fast_flag(self) -> None:
-        manifest = {
-            **self.manifest,
-            "workers": [{**self.manifest["workers"][0], "launch": "luna-fast"}],
-        }
-        _, workers, _ = helper.validate_manifest(manifest)
-        args = helper.worker_start_args(workers[0], "task_1", "label", "run_1")
-        self.assertEqual(args[args.index("--model") + 1], "gpt-5.6-luna")
-        self.assertEqual(args[args.index("--effort") + 1], "max")
-        self.assertIn("--fast", args)
-
-    def test_luna_fast_preflight_checks_effort_and_speed_tier(self) -> None:
-        worker = {"launch": "luna-fast"}
-        catalog = {
-            "gpt-5.6-luna": {
-                "efforts": {"low", "max"},
-                "speedTiers": {"fast"},
-            }
-        }
-        with patch.object(helper, "codex_model_catalog", return_value=(catalog, None)):
-            check = helper.launch_checks([worker])[0]
-        self.assertTrue(check["passed"])
-        self.assertEqual(check["model"], "gpt-5.6-luna")
-        self.assertEqual(check["speedTier"], "fast")
-
-        catalog["gpt-5.6-luna"]["speedTiers"] = set()
-        with patch.object(helper, "codex_model_catalog", return_value=(catalog, None)):
-            check = helper.launch_checks([worker])[0]
-        self.assertFalse(check["passed"])
+    def test_spawn_commands_carry_exact_model_and_effort(self) -> None:
+        self.assertEqual(
+            helper.spawn_command(helper.LAUNCH_SPECS["sol-xhigh"]),
+            "codex -m gpt-5.6-sol -c model_reasoning_effort=xhigh",
+        )
+        self.assertEqual(
+            helper.spawn_command(helper.LAUNCH_SPECS["fable-high"]),
+            "claude --model claude-fable-5",
+        )
+        self.assertIn(
+            "service_tier=priority",
+            helper.spawn_command(helper.LAUNCH_SPECS["luna-fast"]),
+        )
 
 
 class ContractTests(unittest.TestCase):
-    def test_used_run_flags_are_in_preflight_contract(self) -> None:
-        for command in (
-            "orchestration task-create",
-            "orchestration worker-start",
-            "orchestration check",
-        ):
-            self.assertIn("run", helper.REQUIRED_ORCA_COMMANDS[command])
-
-    def test_controller_check_contract_has_no_polling_flags(self) -> None:
-        flags = helper.REQUIRED_ORCA_COMMANDS["orchestration check"]
-        self.assertEqual(flags, {"run", "ack", "json"})
-
-    def test_fast_flag_is_required_only_for_luna_fast_waves(self) -> None:
-        commands = [
-            {
-                "command": name,
-                "argumentMode": "parsed",
-                "usage": name,
-                "flags": sorted(flags),
-            }
-            for name, flags in helper.REQUIRED_ORCA_COMMANDS.items()
-        ]
-        ordinary_checks, _ = helper.command_contract_check({"commands": commands})
-        ordinary_worker_start = next(
-            item
-            for item in ordinary_checks
-            if item["name"] == "command:orchestration worker-start"
+    def test_no_orchestration_commands_remain(self) -> None:
+        self.assertFalse(
+            any(
+                name.startswith("orchestration")
+                for name in helper.REQUIRED_ORCA_COMMANDS
+            )
         )
-        self.assertTrue(ordinary_worker_start["passed"])
-
-        fast_checks, _ = helper.command_contract_check(
-            {"commands": commands}, require_fast=True
-        )
-        fast_worker_start = next(
-            item
-            for item in fast_checks
-            if item["name"] == "command:orchestration worker-start"
-        )
-        self.assertFalse(fast_worker_start["passed"])
-        self.assertEqual(fast_worker_start["missingFlags"], ["fast"])
 
     def test_contract_requires_parsed_argv(self) -> None:
         commands = [
@@ -627,6 +441,15 @@ class ContractTests(unittest.TestCase):
             "residualResources": [],
         }
         self.assertEqual(helper.classify_failure(payload), "rejected_no_effects")
+
+    def test_exact_launch_proven_compares_spawn_commands(self) -> None:
+        record = {
+            "launch": "sol-xhigh",
+            "spawn_command": helper.spawn_command(helper.LAUNCH_SPECS["sol-xhigh"]),
+        }
+        self.assertTrue(helper.exact_launch_proven(record))
+        record["spawn_command"] = "codex -m gpt-5.6-luna"
+        self.assertFalse(helper.exact_launch_proven(record))
 
 
 if __name__ == "__main__":

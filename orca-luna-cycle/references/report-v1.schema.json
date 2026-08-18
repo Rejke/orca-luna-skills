@@ -16,7 +16,8 @@
   ],
   "properties": {
     "reportSchemaVersion": {"const": 1},
-    "taskStatus": {"enum": ["done", "blocked"]},
+    "taskStatus": {"enum": ["done", "failed", "blocked"]},
+    "question": {"type": "string", "minLength": 1, "maxLength": 500},
     "verdict": {"enum": ["PASS", "FAIL", "UNKNOWN", "BLOCKED"]},
     "summary": {"type": "string", "minLength": 1, "maxLength": 500},
     "evidence": {
@@ -106,7 +107,10 @@
   "allOf": [
     {
       "if": {"properties": {"taskStatus": {"const": "blocked"}}},
-      "then": {"properties": {"verdict": {"const": "BLOCKED"}}}
+      "then": {
+        "properties": {"verdict": {"const": "BLOCKED"}},
+        "required": ["question"]
+      }
     }
   ]
 }
