@@ -380,8 +380,7 @@ def render_prompt(worker: dict[str, Any], envelope: dict[str, Any], mode: str) -
     if envelope.get("knownFailureModes"):
         parts.append(
             "KNOWN FAILURE MODES RELEVANT TO THIS SCOPE\n"
-            "Earlier waves failed in these ways. Follow each rule; it applies to "
-            "your scope:\n"
+            "Follow each rule; it applies to your scope:\n"
             + "\n".join(f"- {rule}" for rule in envelope["knownFailureModes"])
         )
     parts.append(f"RULES\n{ROLE_RULES[role]}")
@@ -468,8 +467,7 @@ def runtime_prompt(prompt: str, directory: Path, worker_id: str) -> str:
         f"Report file: {worker_report_path(directory, worker_id)}\n"
         "Wake command (run it in the shell after you write the report file):\n"
         f"{notify_command}\n"
-        "The wake only tells the controller to look; the report file carries "
-        "everything. After the wake, stop and stay idle in this terminal."
+        "After the wake, stop and stay idle in this terminal."
     )
     rendered = prompt.rstrip() + "\n\n" + block + "\n"
     if len(rendered) > MAX_PROMPT_CHARS:
@@ -721,7 +719,7 @@ def validate_manifest(
             "mutators in new worktrees ("
             + ", ".join(new_worktree_mutators)
             + ") require an integrator in the same wave; run a single mutator in "
-            "current instead of accumulating unmerged worktrees"
+            "current"
         )
     if has_mutators and not reviewed_anchor and not review_override:
         raise HelperError(

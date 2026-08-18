@@ -306,10 +306,10 @@ def scaffold_text(directory: Path) -> str:
     lines += [
         "## Subagent prompts",
         "",
-        "<fill: judge the rendered task prompts in tasks/ — did goal, scope, AC"
-        " wording, context, and findings framing set each worker up or mislead"
+        "<fill: judge the rendered worker prompts in prompts/ — did goal, scope,"
+        " AC wording, context, and findings framing set each worker up or mislead"
         " it; changes must be prompt-executable (reword goal, tighten scope, add"
-        " context or lens), citing tasks/<worker>.json — or 'None.'>",
+        " context or lens), citing prompts/<worker>.txt — or 'None.'>",
         "",
         "## Next-wave manifest adjustments",
         "",

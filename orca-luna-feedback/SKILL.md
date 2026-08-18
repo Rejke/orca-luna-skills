@@ -31,9 +31,10 @@ journal, delete it instead of archiving it.
 - Every next-wave suggestion must be a change someone can make in the next manifest:
   a shard boundary, AC wording, launch choice, repair budget, or worktree layout.
   "Communicate better" is not a change.
-- Judge the worker prompts too. Read the task specs in `tasks/` and say which
-  goal/scope/AC/context wording helped or misled each worker. A prompt suggestion
-  must be a concrete rewording or scope cut, cited against `tasks/<worker>.json`.
+- Judge the worker prompts too. Read the rendered prompts in `prompts/` and say
+  which goal/scope/AC/context wording helped or misled each worker. A prompt
+  suggestion must be a concrete rewording or scope cut, cited against
+  `prompts/<worker>.txt`.
 - Skill problems go into their own section; they feed orca-luna-cycle maintenance.
   List contract friction, helper errors, and rules that got in the way of the task —
   each with the exact receipt path.
