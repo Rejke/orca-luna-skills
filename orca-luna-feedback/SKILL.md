@@ -68,6 +68,41 @@ Before changing orca-luna-cycle, read the collected log:
 uv run --no-project <skill>/scripts/feedback.py log --tail 5
 ```
 
+## Learned rules
+
+`archive` also folds each report's `promptFeedback` into `log/patterns.json`:
+
+- A critical or high rule activates after one confirmation. A medium or low rule
+  activates after two waves with different Run IDs.
+- Entries whose `gap` is not `prompt` are counted per gap kind, not turned into
+  rules. Not every mistake is fixed by a prompt.
+- The same failure class merges into one rule. The registry keeps severity,
+  scopes, counts, sources, and first/last seen.
+- At most 24 rules can be active. When the cap blocks an activation, retire
+  something first.
+
+Pick rules for the next wave manifest:
+
+```text
+uv run --no-project <skill>/scripts/feedback.py rules --scopes native,publication
+```
+
+Put the returned `forManifest` lines into `envelope.knownFailureModes` (max 6,
+about 1000 characters). Retire a rule when reviewers report it obsolete:
+
+```text
+uv run --no-project <skill>/scripts/feedback.py rules --retire <id> --reason "..."
+```
+
+A rule must be one instruction a worker can follow and a reviewer can check.
+"Be careful with URLs" is not a rule. These are:
+
+- Trace producer -> proxy -> consumer for each URL and use one shared fixture.
+- Treat the signed manifest as the source of truth; a receipt cannot shrink the
+  required inventory.
+- Show a production call site; a test-only function proves nothing.
+- Join every spawn_blocking task before the lease is released or returned.
+
 After changing this skill, run:
 
 ```text

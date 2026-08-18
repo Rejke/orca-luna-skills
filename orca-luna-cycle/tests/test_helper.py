@@ -336,6 +336,68 @@ class DeliveryTests(unittest.TestCase):
         self.assertFalse((self.directory / helper.NOTIFICATION_FILE).exists())
 
 
+class LearnedRuleTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.manifest = helper.load_json(
+            HELPER_PATH.parents[1] / "references" / "manifest-v2.example.json"
+        )
+
+    def test_known_failure_modes_render_into_every_prompt(self) -> None:
+        manifest = {
+            **self.manifest,
+            "envelope": {
+                **self.manifest["envelope"],
+                "knownFailureModes": [
+                    "[producer-proxy] Trace producer -> proxy -> consumer for each URL."
+                ],
+            },
+        }
+        _, _, prompts = helper.validate_manifest(manifest)
+        self.assertIn("KNOWN FAILURE MODES RELEVANT TO THIS SCOPE", prompts[0])
+        self.assertIn("[producer-proxy]", prompts[0])
+
+    def test_known_failure_modes_caps_are_enforced(self) -> None:
+        for bad in (
+            ["r" * 241],
+            ["rule"] * 7,
+            ["r" * 220 for _ in range(5)],
+        ):
+            with self.assertRaises(helper.HelperError):
+                helper.validate_manifest(
+                    {
+                        **self.manifest,
+                        "envelope": {
+                            **self.manifest["envelope"],
+                            "knownFailureModes": bad,
+                        },
+                    }
+                )
+
+    def test_prompt_feedback_validates_in_delivered_reports(self) -> None:
+        good = valid_report(
+            promptFeedback=[
+                {
+                    "failureClass": "progress accounting",
+                    "rule": "Define progress units and emit them in monotonic order.",
+                    "severity": "high",
+                    "scopes": ["frontend"],
+                }
+            ],
+            ruleFeedback=[{"id": "per-object-fsync", "status": "violated"}],
+        )
+        self.assertEqual(helper.validate_report(good, "scout"), [])
+        for bad_entry in (
+            [{"failureClass": "x", "rule": "y", "severity": "urgent", "scopes": ["a"]}],
+            [{"failureClass": "x", "rule": "y" * 300, "severity": "high", "scopes": ["a"]}],
+            [{"failureClass": "x", "rule": "y", "severity": "high", "scopes": []}],
+            [{}] * 4,
+        ):
+            bad = valid_report(promptFeedback=bad_entry)
+            self.assertNotEqual(helper.validate_report(bad, "scout"), [])
+        bad_rule_feedback = valid_report(ruleFeedback=[{"id": "x", "status": "kept"}])
+        self.assertNotEqual(helper.validate_report(bad_rule_feedback, "scout"), [])
+
+
 class LaunchPolicyTests(unittest.TestCase):
     def setUp(self) -> None:
         self.manifest = helper.load_json(

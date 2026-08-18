@@ -139,7 +139,11 @@ ENVELOPE_FIELDS = {
     "benchmarkReason",
     "reviewedAnchor",
     "reviewOverride",
+    "knownFailureModes",
 }
+MAX_KNOWN_FAILURE_MODES = 6
+MAX_KNOWN_FAILURE_MODE_CHARS = 240
+MAX_KNOWN_FAILURE_MODES_TOTAL = 1000
 DEFAULT_FIELDS = {"worktree", "mutation", "setup", "checks"}
 WORKER_FIELDS = {
     "id",
@@ -177,16 +181,64 @@ ROLE_RULES = {
         "handoff exactly once. Resolve mechanical conflicts only; ask Sol about semantic "
         "conflicts. Run cross-shard checks and report the final state anchor."
     ),
+    # The reviewer and antislop charters are adapted from 1F47E/rival
+    # (bug-hunter, arch-security, code-quality role prompts and
+    # AntislopCodePrompt), merged with this skill's report contract.
     "reviewer": (
-        "Read only. Review raw integrated state using the assigned lens. Map acceptance "
-        "criteria to evidence; report only reproducible material findings with exact path:line. "
-        "Do not trust implementer conclusions and do not edit."
+        "Read only. Review the raw integrated state through your assigned lens; do "
+        "not trust implementer conclusions and do not edit. Find concrete defects "
+        "with high confidence, including where the implementer did not look: "
+        "logic bugs, broken state transitions, wrong assumptions, missing "
+        "edge cases, wrong wiring between layers, race conditions, data-loss risks, "
+        "architectural regressions, incomplete refactors, broken flows across "
+        "files, security and permission problems, and error handling that fails "
+        "silently.\n"
+        "Check the known patterns of generated code explicitly:\n"
+        "- every import exists in the project's dependency tree;\n"
+        "- every external call (DB, API, filesystem) handles null, empty, error, "
+        "and timeout — not only the happy path;\n"
+        "- no DB or API calls inside loops, no unbounded list queries;\n"
+        "- tests assert specific values, not truthiness or no-throw;\n"
+        "- no string interpolation in SQL or shell, no secrets in code, no missing "
+        "auth on new routes;\n"
+        "- new abstraction layers are justified by the task, not by habit;\n"
+        "- no files changed outside the declared scope.\n"
+        "Do not spend time on style, formatting, or speculative architecture "
+        "opinions. Map every acceptance criterion to evidence. Report only "
+        "findings you verified against the code, each with exact path:line; prefer "
+        "fewer, stronger findings; if you are not confident, leave the finding out "
+        "or cap it at medium. Sol issues the final verdict from your report — "
+        "optimize for true positives, not completeness."
     ),
     "antislop": (
-        "Read only and review quality, not bugs. Verify concrete cuts for duplication, "
-        "unnecessary abstraction, silent fallback, speculative compatibility/generality, "
-        "wrong depth, reinvention, wrapper/comment slop, or wasted work. Search call sites; "
-        "do not invent cuts. Leanness is informational."
+        "Read only; quality, not bugs. Do not report correctness or security "
+        "issues, and skip style nitpicks. Work through every angle and name the "
+        "concrete cut or replacement for each finding:\n"
+        "1. Reuse and DRY — new code that re-implements what the codebase already "
+        "has; duplicated logic is a finding even when each copy works. Name the "
+        "existing helper, or the single home the copies should share.\n"
+        "2. Simplification — redundant or derivable state, copy-paste with small "
+        "variations, deep nesting, dead code. Name the simpler form.\n"
+        "3. Efficiency — repeated computation or I/O, independent operations run "
+        "sequentially, blocking work on startup or hot paths, closures that keep a "
+        "whole scope alive. Name the cheaper form.\n"
+        "4. Altitude — special cases layered on shared infrastructure mean the fix "
+        "is too shallow; prefer generalizing the mechanism underneath.\n"
+        "5. Backward-compat hoarding — shims, legacy fallbacks, versioned "
+        "duplicates, re-exports kept just in case. Keep compat only for a named "
+        "external consumer (published API, on-disk format, wire protocol); name "
+        "that consumer or recommend the cut.\n"
+        "6. Library reinvention — hand-rolled parsers, retry logic, date math, "
+        "globbing. Prefer the stdlib and the project's existing dependencies; name "
+        "the exact replacement.\n"
+        "7. Slop signatures — comments narrating the obvious; silent fallbacks "
+        'nobody asked for (ask "where was this behavior specified?" instead of '
+        "guessing the intent); single-call wrappers, one-implementation "
+        "interfaces, helper modules that collect unrelated functions; options nobody passes and "
+        "generality nobody uses — verify by call-site search before reporting.\n"
+        "Each finding carries a severity and a matching entry in cuts; leanness "
+        "1-10 is information only. If the code is already lean, say so, rate it "
+        "high, and return few or zero findings. Do not invent problems."
     ),
     "fixer": (
         "Own only the declared findings. Reproduce them when practical, fix root causes with "
@@ -315,6 +367,13 @@ def render_prompt(worker: dict[str, Any], envelope: dict[str, Any], mode: str) -
     }
     if state:
         parts.append(f"STATE\n{render_value(state)}")
+    if envelope.get("knownFailureModes"):
+        parts.append(
+            "KNOWN FAILURE MODES RELEVANT TO THIS SCOPE\n"
+            "Earlier waves failed in these ways. Follow each rule; it applies to "
+            "your scope:\n"
+            + "\n".join(f"- {rule}" for rule in envelope["knownFailureModes"])
+        )
     parts.append(f"RULES\n{ROLE_RULES[role]}")
     lens = str(worker.get("lens", "")).lower()
     if role == "reviewer" and "antislop" in lens:
@@ -349,6 +408,22 @@ def render_prompt(worker: dict[str, Any], envelope: dict[str, Any], mode: str) -
             "UNKNOWN and list the exact unprovable claims in risks; never stretch an "
             "evidence gap into PASS or into a FAIL finding without a defect."
         )
+        learning = (
+            "LEARNED-RULE FEEDBACK\nWhen a finding shows a failure class that a "
+            "better worker prompt would have prevented, add an optional report field "
+            'promptFeedback (max 3 entries): [{"failureClass":"<short class>",'
+            '"rule":"<one imperative, checkable instruction, <=200 chars>",'
+            '"severity":"critical|high|medium|low","scopes":["<area tags>"],'
+            '"gap":"prompt|decomposition|judgment|test|tooling"}]. '
+            '"Be careful" is not a rule; name the exact check to run.'
+        )
+        if envelope.get("knownFailureModes"):
+            learning += (
+                " For the KNOWN FAILURE MODES above, also add ruleFeedback: "
+                '[{"id":"<id in brackets>","status":"violated|helped|retire"}] '
+                "when you have evidence."
+            )
+        parts.append(learning)
     prompt = "\n\n".join(parts).strip() + "\n"
     if len(prompt) > MAX_PROMPT_CHARS:
         raise HelperError(
@@ -453,6 +528,23 @@ def validate_manifest(
             raise HelperError(
                 "envelope.reviewedAnchor must equal envelope.baseAnchor"
             )
+    known_failure_modes = string_list(
+        envelope.get("knownFailureModes"), "envelope.knownFailureModes"
+    )
+    if len(known_failure_modes) > MAX_KNOWN_FAILURE_MODES:
+        raise HelperError(
+            f"envelope.knownFailureModes allows at most {MAX_KNOWN_FAILURE_MODES} rules"
+        )
+    if any(len(rule) > MAX_KNOWN_FAILURE_MODE_CHARS for rule in known_failure_modes):
+        raise HelperError(
+            "each known failure mode must be at most "
+            f"{MAX_KNOWN_FAILURE_MODE_CHARS} characters"
+        )
+    if sum(len(rule) for rule in known_failure_modes) > MAX_KNOWN_FAILURE_MODES_TOTAL:
+        raise HelperError(
+            "knownFailureModes together must be at most "
+            f"{MAX_KNOWN_FAILURE_MODES_TOTAL} characters"
+        )
 
     defaults = require_object(
         manifest.get("defaults", {}), "manifest.defaults", DEFAULT_FIELDS
@@ -637,6 +729,8 @@ def validate_manifest(
         normalized_envelope["reviewedAnchor"] = reviewed_anchor
     if review_override:
         normalized_envelope["reviewOverride"] = review_override
+    if known_failure_modes:
+        normalized_envelope["knownFailureModes"] = known_failure_modes
     normalized_manifest = {
         "schemaVersion": MANIFEST_VERSION,
         "mode": mode,
@@ -1098,10 +1192,14 @@ def launch_checks(workers: list[dict[str, Any]]) -> list[dict[str, Any]]:
             entry = (codex_catalog or {}).get(spec["model"], {})
             efforts = entry.get("efforts", set())
             speed_tiers = entry.get("speedTiers", set())
+            # The check uses spec["model"]/spec["effort"] verbatim — the same
+            # strings worker-start sends. A composed id (for example a "[fast]"
+            # suffix) is not in the catalog and fails here instead of at launch.
             checks.append(
                 {
                     "name": name,
-                    "passed": spec["effort"] in efforts
+                    "passed": "[" not in spec["model"]
+                    and spec["effort"] in efforts
                     and (speed_tier is None or speed_tier in speed_tiers),
                     "model": spec["model"],
                     "effort": spec["effort"],
@@ -2264,6 +2362,49 @@ def validate_report(report: Any, role: str) -> list[str]:
             errors.append("leanness must be an integer from 1 to 10")
     if role == "fixer" and not isinstance(report.get("fixed"), list):
         errors.append("fixed must be an array")
+    prompt_feedback = report.get("promptFeedback")
+    if prompt_feedback is not None:
+        if not isinstance(prompt_feedback, list) or len(prompt_feedback) > 3:
+            errors.append("promptFeedback must be an array of at most 3 entries")
+        else:
+            for entry in prompt_feedback:
+                if not isinstance(entry, dict):
+                    errors.append("each promptFeedback entry must be an object")
+                    break
+                rule = entry.get("rule")
+                if (
+                    not isinstance(entry.get("failureClass"), str)
+                    or not entry["failureClass"].strip()
+                    or not isinstance(rule, str)
+                    or not rule.strip()
+                    or len(rule) > 200
+                    or entry.get("severity")
+                    not in {"critical", "high", "medium", "low"}
+                    or not isinstance(entry.get("scopes"), list)
+                    or not entry["scopes"]
+                    or not all(
+                        isinstance(scope, str) and scope.strip()
+                        for scope in entry["scopes"]
+                    )
+                    or entry.get("gap", "prompt")
+                    not in {"prompt", "decomposition", "judgment", "test", "tooling"}
+                ):
+                    errors.append(
+                        "each promptFeedback entry needs failureClass, a rule of at "
+                        "most 200 chars, severity, non-empty scopes, and a valid gap"
+                    )
+                    break
+    rule_feedback = report.get("ruleFeedback")
+    if rule_feedback is not None:
+        if not isinstance(rule_feedback, list) or not all(
+            isinstance(entry, dict)
+            and isinstance(entry.get("id"), str)
+            and entry.get("status") in {"violated", "helped", "retire"}
+            for entry in rule_feedback
+        ):
+            errors.append(
+                "each ruleFeedback entry needs id and status violated, helped, or retire"
+            )
     return errors
 
 
@@ -3042,6 +3183,7 @@ def command_self_test(_: argparse.Namespace) -> int:
         "effort": "max",
         "speedTier": "fast",
     }
+    assert all("[" not in spec["model"] for spec in LAUNCH_SPECS.values())
     assert ROLE_LAUNCHES["reviewer"] == ("sol-xhigh",)
     assert ROLE_LAUNCHES["antislop"] == ("sol-xhigh",)
     assert "luna-fast" in ROLE_LAUNCHES["implementer"]
@@ -3223,6 +3365,67 @@ def command_self_test(_: argparse.Namespace) -> int:
         }
     )
     assert validate_report(valid_report, "reviewer") == []
+    learned_report = dict(valid_report)
+    learned_report["promptFeedback"] = [
+        {
+            "failureClass": "producer-proxy-consumer contract divergence",
+            "rule": "Trace producer -> proxy -> consumer for each URL and use one shared fixture.",
+            "severity": "high",
+            "scopes": ["publication", "routing"],
+        }
+    ]
+    learned_report["ruleFeedback"] = [{"id": "per-object-fsync", "status": "helped"}]
+    assert validate_report(learned_report, "reviewer") == []
+    bad_learned = dict(valid_report)
+    bad_learned["promptFeedback"] = [{"failureClass": "x", "rule": "y" * 300}]
+    assert validate_report(bad_learned, "reviewer") != []
+    rules_manifest = {
+        **manifest,
+        "envelope": {
+            **manifest["envelope"],
+            "knownFailureModes": [
+                "[producer-proxy] Trace producer -> proxy -> consumer for each URL."
+            ],
+        },
+    }
+    _, _, rules_prompts = validate_manifest(rules_manifest)
+    assert "KNOWN FAILURE MODES RELEVANT TO THIS SCOPE" in rules_prompts[0]
+    assert "[producer-proxy]" in rules_prompts[0]
+    reviewer_variant = {
+        key: value
+        for key, value in {
+            **manifest["workers"][0],
+            "id": "rev",
+            "role": "reviewer",
+        }.items()
+        if key != "launch"
+    }
+    _, _, charter_prompts = validate_manifest(
+        {**manifest, "workers": [reviewer_variant]}
+    )
+    assert "optimize for true positives" in charter_prompts[0]
+    assert "handles null, empty, error" in charter_prompts[0]
+    antislop_variant = {**reviewer_variant, "id": "slop", "role": "antislop"}
+    _, _, antislop_prompts = validate_manifest(
+        {**manifest, "workers": [antislop_variant]}
+    )
+    assert "Library reinvention" in antislop_prompts[0]
+    assert "Backward-compat hoarding" in antislop_prompts[0]
+    assert "Do not invent problems" in antislop_prompts[0]
+    try:
+        validate_manifest(
+            {
+                **manifest,
+                "envelope": {
+                    **manifest["envelope"],
+                    "knownFailureModes": ["r" * 220 for _ in range(5)],
+                },
+            }
+        )
+    except HelperError as exc:
+        assert "1000" in str(exc)
+    else:
+        raise AssertionError("oversized knownFailureModes was accepted")
     assert (
         classify_failure({"error": {"code": "invalid_argument"}})
         == "rejected_no_effects"

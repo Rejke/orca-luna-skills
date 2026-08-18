@@ -40,3 +40,13 @@ uv run --no-project <skills>/orca-luna-cycle/scripts/orca_luna_worker.py self-te
 uv run --no-project <skills>/orca-luna-cycle/tests/test_helper.py
 uv run --no-project <skills>/orca-luna-feedback/scripts/feedback.py self-test
 ```
+
+## Credits
+
+The built-in reviewer and anti-slop charters are adapted from the review
+prompts in [rival](https://github.com/1F47E/rival), a tool that dispatches
+detached multi-model code reviews. rival's role prompts (bug hunter,
+architecture/security, code quality) and its anti-slop cut-list prompt shaped
+the charters here; we merged them with this skill's lifecycle and report
+contract. rival also works well next to these skills as an independent
+cross-provider check on the final integrated commit.

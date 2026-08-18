@@ -45,7 +45,12 @@
         "repairBudget": {"type": "integer", "minimum": 0, "maximum": 10},
         "benchmarkReason": {"type": "string", "minLength": 1},
         "reviewedAnchor": {"type": "string", "minLength": 1},
-        "reviewOverride": {"type": "string", "minLength": 1}
+        "reviewOverride": {"type": "string", "minLength": 1},
+        "knownFailureModes": {
+          "type": "array",
+          "maxItems": 6,
+          "items": {"type": "string", "minLength": 1, "maxLength": 240}
+        }
       }
     },
     "defaults": {

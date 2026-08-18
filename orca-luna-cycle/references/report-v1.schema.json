@@ -66,7 +66,42 @@
     "integrated": {"type": "array", "items": {"type": "string"}},
     "anchor": {"type": "string"},
     "conflicts": {"type": "array", "items": {"type": "string"}},
-    "fixed": {"type": "array", "items": {"type": "string"}}
+    "fixed": {"type": "array", "items": {"type": "string"}},
+    "promptFeedback": {
+      "type": "array",
+      "maxItems": 3,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["failureClass", "rule", "severity", "scopes"],
+        "properties": {
+          "failureClass": {"type": "string", "minLength": 1},
+          "rule": {"type": "string", "minLength": 1, "maxLength": 200},
+          "severity": {"enum": ["critical", "high", "medium", "low"]},
+          "scopes": {
+            "type": "array",
+            "minItems": 1,
+            "items": {"type": "string", "minLength": 1}
+          },
+          "gap": {
+            "enum": ["prompt", "decomposition", "judgment", "test", "tooling"],
+            "default": "prompt"
+          }
+        }
+      }
+    },
+    "ruleFeedback": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "status"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "status": {"enum": ["violated", "helped", "retire"]}
+        }
+      }
+    }
   },
   "allOf": [
     {

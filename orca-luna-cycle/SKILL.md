@@ -119,6 +119,11 @@ not copy their text. The helper rejects unknown fields, duplicate worker IDs or
 worktree names, unknown ACs, unsafe shared mutators, and wrong modes before it
 touches Orca.
 
+Optional `envelope.knownFailureModes`: up to 6 learned rules (240 characters each,
+1000 total). Get them from the feedback skill's `rules` command. The renderer adds
+them to every worker prompt as a KNOWN FAILURE MODES section. Rules travel through
+the manifest, so a prompt can always be rebuilt from the manifest alone.
+
 Print the JSON Schema and a valid example; do not read the helper source:
 
 ```text
@@ -323,12 +328,23 @@ Stop automatic repair after `repairBudget` tries; running out of tries means
 the next wave that changes files on that anchor needs a fresh `PASS` review recorded
 as `reviewedAnchor`, or a `reviewOverride` that names the reason.
 
+The helper renders a full built-in charter for every reviewer and anti-slop worker
+(adapted from 1F47E/rival): defect focus areas, generated-code checks, and the
+seven anti-slop angles. The manifest adds only lens, scope, and criteria — do not
+copy charter text into the manifest.
+
 Use several review lenses only when the change warrants it: acceptance/bugs,
 architecture/security, tests/DX/performance/accessibility, and anti-slop (quality
 only). Anti-slop reports concrete cuts: duplication, needless abstraction, silent
 fallback, speculative generality or compatibility, wrong depth, reinvention, comment
 or wrapper filler, and wasted work. The leanness score is information only; the
 findings decide the verdict.
+
+Reviewers also close the learning loop. `promptFeedback` (max 3 entries per report)
+names a failure class and one checkable rule that would have prevented it, with
+severity, scope tags, and a `gap` kind — not every mistake is fixed by a prompt.
+`ruleFeedback` says which of the wave's known failure modes were violated, helped,
+or should be retired. The feedback skill folds both into its rule registry.
 
 ## Final Sol gate
 
