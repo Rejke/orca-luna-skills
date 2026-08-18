@@ -124,6 +124,15 @@ Optional `envelope.knownFailureModes`: up to 6 learned rules (240 characters eac
 them to every worker prompt as a KNOWN FAILURE MODES section. Rules travel through
 the manifest, so a prompt can always be rebuilt from the manifest alone.
 
+Keep the manifest lean. The rendered prompt already carries the role charter, the
+report contract, the verdict rules, and the learning arrays — do not restate any of
+them in acceptance criteria, constraints, or checks. A paraphrase drifts and
+becomes a second, conflicting contract. One acceptance criterion is one testable
+statement, not a paragraph. To protect earlier work, write one line — "Preserve
+all behavior accepted at <reviewedAnchor>" — instead of listing past wins; that
+list grows every wave and never shrinks. Aim for under 6000 characters per worker
+spec; preflight and `--dry-run` flag any spec over 8000.
+
 Print the JSON Schema and a valid example; do not read the helper source:
 
 ```text

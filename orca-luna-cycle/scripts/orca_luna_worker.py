@@ -49,6 +49,7 @@ ROLE_LAUNCHES = {
 }
 MAX_WORKERS = 10
 MAX_PROMPT_CHARS = 16_000
+PROMPT_BUDGET_CHARS = 8_000
 MAX_BODY_OUTPUT_CHARS = 3_000
 MESSAGE_TYPES = {"worker_done", "question", "escalation", "heartbeat", "status"}
 STATE_FILE = "wave-state.json"
@@ -87,7 +88,6 @@ REQUIRED_ORCA_COMMANDS = {
         "agent",
         "model",
         "effort",
-        "fast",
         "name",
         "display-name",
         "setup",
@@ -325,14 +325,16 @@ def require_string(value: Any, name: str) -> str:
     return value.strip()
 
 
-def string_list(value: Any, name: str) -> list[str]:
+def string_list(
+    value: Any, name: str, *, preserve_whitespace: bool = False
+) -> list[str]:
     if value is None:
         return []
     if not isinstance(value, list) or not all(
         isinstance(item, str) and item.strip() for item in value
     ):
         raise HelperError(f"{name} must be a list of non-empty strings")
-    return [item.strip() for item in value]
+    return list(value) if preserve_whitespace else [item.strip() for item in value]
 
 
 def report_example(role: str) -> dict[str, Any]:
@@ -483,14 +485,11 @@ def runtime_prompt(prompt: str, directory: Path) -> str:
     )
     block = (
         "CONTROLLER WAKE\n"
-        "Do not poll, call ask, or wait for the coordinator. If a missing decision truly "
-        "blocks the task, complete with taskStatus=blocked plus verified evidence; Sol can "
-        "then answer and dispatch a fresh continuation. In the same shell tool call as your "
-        "exact injected worker_done command, append the following with && so it runs "
-        "only after Orca accepts worker_done:\n"
+        "In the same shell tool call as your worker_done command, append this with "
+        "&& so it runs only after Orca accepts the completion:\n"
         f"{notify_command}\n"
-        "This queues one wake-only continuation for Sol; it carries no lifecycle "
-        "authority. Then stop exactly as Orca's preamble requires."
+        "It queues one wake for Sol and carries no lifecycle authority. Then stop "
+        "as Orca's preamble requires."
     )
     rendered = prompt.rstrip() + "\n\n" + block + "\n"
     if len(rendered) > MAX_PROMPT_CHARS:
@@ -530,7 +529,11 @@ def validate_manifest(
     envelope_goal = require_string(envelope.get("goal"), "envelope.goal")
     non_goals = string_list(envelope.get("nonGoals"), "envelope.nonGoals")
     constraints = string_list(envelope.get("constraints"), "envelope.constraints")
-    dirty_state = string_list(envelope.get("dirtyState"), "envelope.dirtyState")
+    dirty_state = string_list(
+        envelope.get("dirtyState"),
+        "envelope.dirtyState",
+        preserve_whitespace=True,
+    )
     criteria = envelope.get("acceptanceCriteria")
     if not isinstance(criteria, dict) or not criteria:
         raise HelperError("envelope.acceptanceCriteria must be a non-empty object")
@@ -1140,11 +1143,16 @@ def command_registry(context: Any) -> dict[str, dict[str, Any]]:
     return registry
 
 
-def command_contract_check(context: Any) -> tuple[list[dict[str, Any]], str]:
+def command_contract_check(
+    context: Any, *, require_fast: bool = False
+) -> tuple[list[dict[str, Any]], str]:
     registry = command_registry(context)
     checks: list[dict[str, Any]] = []
     relevant: dict[str, Any] = {}
     for command, required_flags in REQUIRED_ORCA_COMMANDS.items():
+        required_flags = set(required_flags)
+        if command == "orchestration worker-start" and require_fast:
+            required_flags.add("fast")
         spec = registry.get(command)
         flags = set(spec.get("flags", [])) if isinstance(spec, dict) else set()
         missing = sorted(required_flags - flags)
@@ -1309,7 +1317,10 @@ def preflight_manifest(
         "orchestration.contract.v1",
         "orchestration.worker-launch-preferences.v1",
     }
-    if any(LAUNCH_SPECS[worker["launch"]].get("speedTier") for worker in workers):
+    uses_fast = any(
+        LAUNCH_SPECS[worker["launch"]].get("speedTier") for worker in workers
+    )
+    if uses_fast:
         required_capabilities.add("orchestration.worker-fast-mode.v1")
     checks.append(
         {
@@ -1327,7 +1338,9 @@ def preflight_manifest(
             context.get("schemaVersion") if isinstance(context, dict) else None
         )
         try:
-            command_checks, contract_hash = command_contract_check(context)
+            command_checks, contract_hash = command_contract_check(
+                context, require_fast=uses_fast
+            )
         except HelperError as exc:
             checks.append(
                 {
@@ -1499,11 +1512,15 @@ def command_preflight(args: argparse.Namespace) -> int:
             "mutation": worker["mutation"],
             "label": worker_label(worker, index),
             "promptChars": len(prompt),
+            "overBudget": len(prompt) > PROMPT_BUDGET_CHARS,
         }
         for index, (worker, prompt) in enumerate(zip(workers, live_prompts), start=1)
     ]
     save_json(directory / "preflight.json", receipt)
     failed = [check["name"] for check in receipt["checks"] if not check.get("passed")]
+    oversized = [
+        entry["id"] for entry in receipt["workers"] if entry["overBudget"]
+    ]
     print(
         compact_json(
             {
@@ -1511,6 +1528,14 @@ def command_preflight(args: argparse.Namespace) -> int:
                 "launches": sorted({worker["launch"] for worker in workers}),
                 "runtime": receipt.get("orca"),
                 "failedChecks": failed,
+                **(
+                    {
+                        "oversizedPrompts": oversized,
+                        "note": f"trim manifest prose; budget is {PROMPT_BUDGET_CHARS} chars per spec",
+                    }
+                    if oversized
+                    else {}
+                ),
                 "receipts": str(directory),
             }
         )
@@ -2088,6 +2113,7 @@ def command_dispatch_wave(args: argparse.Namespace) -> int:
                             "launch": worker["launch"],
                             "label": worker_label(worker, index),
                             "prompt_chars": len(prompt),
+                            "overBudget": len(prompt) > PROMPT_BUDGET_CHARS,
                         }
                         for index, (worker, prompt) in enumerate(
                             zip(workers, prompts), start=1
@@ -2335,8 +2361,8 @@ def validate_report(report: Any, role: str) -> list[str]:
     if report.get("taskStatus") not in {"done", "blocked"}:
         errors.append("taskStatus must be done or blocked")
     summary = report.get("summary")
-    if not isinstance(summary, str) or not summary.strip() or len(summary) > 500:
-        errors.append("summary must be a non-empty string <=500 chars")
+    if not isinstance(summary, str) or not summary.strip():
+        errors.append("summary must be a non-empty string")
     for field in ("evidence", "risks", "checks", "filesModified"):
         value = report.get(field)
         if not isinstance(value, list) or not all(
@@ -3224,6 +3250,7 @@ def command_self_test(_: argparse.Namespace) -> int:
     assert ROLE_LAUNCHES["antislop"] == ("sol-xhigh",)
     assert "luna-fast" in ROLE_LAUNCHES["implementer"]
     assert all(launches[0] != "luna-fast" for launches in ROLE_LAUNCHES.values())
+    assert "fast" not in REQUIRED_ORCA_COMMANDS["orchestration worker-start"]
     assert REQUIRED_ORCA_COMMANDS["orchestration check"] == {"run", "ack", "json"}
     manifest, workers, prompts = validate_manifest(
         load_json(REFERENCES / "manifest-v2.example.json")

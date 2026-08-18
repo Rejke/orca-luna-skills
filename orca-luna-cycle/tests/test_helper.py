@@ -197,7 +197,7 @@ class DeliveryTests(unittest.TestCase):
     def test_live_prompt_bundles_wake_after_worker_done(self) -> None:
         prompt = helper.runtime_prompt("ROLE: IMPLEMENTER\n", self.directory)
         self.assertIn("notify-controller", prompt)
-        self.assertIn("append the following with &&", prompt)
+        self.assertIn("append this with", prompt)
         self.assertNotIn("--wait", prompt)
         self.assertIn(str(self.directory / "runtime" / "helper.py"), prompt)
 
@@ -335,7 +335,9 @@ class DeliveryTests(unittest.TestCase):
         state = helper.read_wave_state(self.directory)["workers"][0]
         self.assertEqual(state["report_status"], "valid")
 
-    def test_report_summary_is_clamped(self) -> None:
+    def test_long_report_summary_is_accepted_but_delivery_preview_is_clamped(
+        self,
+    ) -> None:
         payload = valid_report(
             taskId="task_expected",
             dispatchId="ctx_expected",
@@ -346,8 +348,12 @@ class DeliveryTests(unittest.TestCase):
         with patch.object(helper, "call_orca", return_value=(0, release, "")):
             result = helper.process_delivery(self.directory, delivery(payload), "test")
         message = result["messages"][0]
+        self.assertTrue(message["accepted"])
+        self.assertEqual(message["reportErrors"], [])
         self.assertLessEqual(len(message["summary"]), helper.MAX_BODY_OUTPUT_CHARS)
         self.assertTrue(message["truncated"])
+        state = helper.read_wave_state(self.directory)["workers"][0]
+        self.assertEqual(state["report_status"], "valid")
 
     def test_failed_wake_send_clears_the_coalescing_marker(self) -> None:
         tasks = {"result": {"tasks": [{"id": "task_expected", "status": "completed"}]}}
@@ -384,6 +390,21 @@ class LearnedRuleTests(unittest.TestCase):
         _, _, prompts = helper.validate_manifest(manifest)
         self.assertIn("KNOWN FAILURE MODES RELEVANT TO THIS SCOPE", prompts[0])
         self.assertIn("[producer-proxy]", prompts[0])
+
+    def test_dirty_state_preserves_git_porcelain_columns(self) -> None:
+        manifest = {
+            **self.manifest,
+            "envelope": {
+                **self.manifest["envelope"],
+                "dirtyState": [" M skills-lock.json", "?? untracked/"],
+            },
+        }
+        normalized, _, prompts = helper.validate_manifest(manifest)
+        self.assertEqual(
+            normalized["envelope"]["dirtyState"],
+            [" M skills-lock.json", "?? untracked/"],
+        )
+        self.assertIn('" M skills-lock.json"', prompts[0])
 
     def test_known_failure_modes_caps_are_enforced(self) -> None:
         for bad in (
@@ -549,6 +570,35 @@ class ContractTests(unittest.TestCase):
     def test_controller_check_contract_has_no_polling_flags(self) -> None:
         flags = helper.REQUIRED_ORCA_COMMANDS["orchestration check"]
         self.assertEqual(flags, {"run", "ack", "json"})
+
+    def test_fast_flag_is_required_only_for_luna_fast_waves(self) -> None:
+        commands = [
+            {
+                "command": name,
+                "argumentMode": "parsed",
+                "usage": name,
+                "flags": sorted(flags),
+            }
+            for name, flags in helper.REQUIRED_ORCA_COMMANDS.items()
+        ]
+        ordinary_checks, _ = helper.command_contract_check({"commands": commands})
+        ordinary_worker_start = next(
+            item
+            for item in ordinary_checks
+            if item["name"] == "command:orchestration worker-start"
+        )
+        self.assertTrue(ordinary_worker_start["passed"])
+
+        fast_checks, _ = helper.command_contract_check(
+            {"commands": commands}, require_fast=True
+        )
+        fast_worker_start = next(
+            item
+            for item in fast_checks
+            if item["name"] == "command:orchestration worker-start"
+        )
+        self.assertFalse(fast_worker_start["passed"])
+        self.assertEqual(fast_worker_start["missingFlags"], ["fast"])
 
     def test_contract_requires_parsed_argv(self) -> None:
         commands = [
