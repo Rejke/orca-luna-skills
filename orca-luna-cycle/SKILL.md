@@ -71,11 +71,7 @@ when Sol does not know enough to split the work safely.
 ## Launch policy
 
 The optional worker field `launch` picks one fixed spec. The helper rejects other
-values and spawns each agent with that exact command. Workers run without the
-agent's own sandbox and approval prompts (`--dangerously-bypass-approvals-and-sandbox`
-for codex, `--dangerously-skip-permissions` for claude): nobody watches a worker
-terminal to click an approval, so a sandbox prompt would hang the worker forever.
-The worktree split and the role rules are the safety boundary.
+values and spawns each agent with that exact command:
 
 - `luna-max` — codex `gpt-5.6-luna` at `model_reasoning_effort=max`. The default
   for scout, implementer, integrator, and fixer. Use it for frontend business logic
