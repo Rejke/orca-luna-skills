@@ -246,14 +246,16 @@ completion shows `accepted: false`, a rejection code, and the expected IDs.
 Lifecycle `succeeded` means the worker finished its job; a reviewer can still report
 `FAIL`, `UNKNOWN`, or `BLOCKED`.
 
-Workers use the lifecycle command and IDs that Orca injected, and add one `--payload`
-with the report. The whole report goes into that one `--payload`; it cannot be
-combined with flags like `--files-modified`. As a fallback the drain also accepts a
-report as JSON in `--body` or in a file named by `--report-path` (absolute path, size
-limit). "Exactly one completion" counts accepted completions: if the CLI rejects a
-send with no effects, fix the command from the error text and send once more. Do not
-read CLI internals to debug it. Do not paste or rebuild Task/Dispatch IDs in the task
-text.
+Workers send the worker_done command that Orca's preamble shows, with its
+`--task-id`/`--dispatch-id`/`--outcome` flags unchanged. The full report goes into a
+fresh file, passed as `--report-path` (absolute path, size limit). JSON never
+travels on the command line, so the Windows PowerShell bridge cannot damage it. As a
+fallback the drain still accepts a report in `--payload` or as JSON in `--body` from
+older waves. "Exactly one completion" counts accepted completions: if the CLI
+rejects a send with no effects, fix the command from the error text and send once
+more. Do not read CLI internals to debug it. Workers do not use blocking `ask` in
+this skill; heartbeats follow the preamble. Do not paste or rebuild Task/Dispatch
+IDs in the task text.
 
 If the drain finds a question, an escalation, a rejected completion, an invalid
 report, a failed release, a failed lifecycle, or a review verdict that needs action,

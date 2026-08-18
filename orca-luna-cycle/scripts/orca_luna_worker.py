@@ -413,22 +413,28 @@ def render_prompt(worker: dict[str, Any], envelope: dict[str, Any], mode: str) -
             "implementation depth, reinvention, wrapper/comment slop, and wasted work."
         )
     parts.append(
-        "REPORT\nFollow Orca's injected lifecycle command exactly. Exactly one accepted "
-        "worker_done completes the task: send it only when the job is finished — never "
-        "a probe, test, or partial completion, because the first accepted completion "
-        "becomes your report of record. If the CLI rejects the send before recording "
-        "it, correct the command from the error message and resend once; the error "
-        "plus --help is the complete contract — never investigate CLI internals, "
-        "wrappers, or binaries. Never put the report into a status or question "
-        "message; only the single worker_done --payload is validated. Put the entire "
-        "report inside that one --payload and do not combine it with structured "
-        "payload flags such as --files-modified, --report-path, or --outcome — they "
-        "are mutually exclusive with raw payload. Copy lifecycle IDs verbatim from "
-        "the injected command; never retype or reconstruct them. Keep --body to exactly "
-        "three concise executive-summary sentences. The --payload is compact JSON "
-        "matching this contract (material evidence only, <=3000 chars). Replace every "
-        "<...> placeholder; use an empty array when that category has no material "
+        "REPORT\nSend worker_done exactly as Orca's preamble shows. Copy the "
+        "injected command and keep its --task-id, --dispatch-id, and --outcome "
+        "flags unchanged. Keep --body to exactly three executive-summary "
+        "sentences. Write the full report as compact JSON (material evidence "
+        "only, <=3000 chars) to a fresh file under /tmp with the Write tool. "
+        "Pass that file's absolute path as --report-path. Do not add a raw "
+        "--payload. The report must match this contract. Replace every <...> "
+        "placeholder; use an empty array when a category has no material "
         "items:\n" + compact_json(report_example(role))
+    )
+    parts.append(
+        "Exactly one accepted completion ends the task. Send worker_done only "
+        "when the job is finished — never a probe or a partial completion. The "
+        "first accepted completion becomes your report of record. If the CLI "
+        "rejects the send before it records anything, fix the command from the "
+        "error text and resend once. The error plus --help is the complete "
+        "contract; never investigate CLI internals, wrappers, or binaries. "
+        "Never put the report into a status or question message.\n"
+        "This skill overrides one point from the preamble: do not use blocking "
+        'ask. A truly blocked task completes once with taskStatus "blocked" '
+        "and evidence; Sol then answers and starts a fresh continuation. "
+        "Heartbeats stay as the preamble says."
     )
     if role in {"reviewer", "antislop"}:
         parts.append(

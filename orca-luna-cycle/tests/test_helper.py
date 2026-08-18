@@ -288,6 +288,35 @@ class DeliveryTests(unittest.TestCase):
         state = helper.read_wave_state(self.directory)["workers"][0]
         self.assertIsNone(state["completion_accepted"])
 
+    def test_flags_only_completion_with_report_file_is_accepted(self) -> None:
+        report_file = self.directory / "flags-report.json"
+        report_file.write_text(json.dumps(valid_report()), encoding="utf-8")
+        receipt = {
+            "result": {
+                "deliveryId": "delivery_flags",
+                "messages": [
+                    {
+                        "id": "msg_flags",
+                        "type": "worker_done",
+                        "body": "Did the work. Found the result. Nothing remains.",
+                        "taskId": "task_expected",
+                        "dispatchId": "ctx_expected",
+                        "outcome": "succeeded",
+                        "reportPath": str(report_file),
+                    }
+                ],
+            }
+        }
+        release = {"ok": True, "result": {"state": "released"}}
+        with patch.object(helper, "call_orca", return_value=(0, release, "")):
+            result = helper.process_delivery(self.directory, receipt, "test")
+        message = result["messages"][0]
+        self.assertTrue(message["accepted"])
+        self.assertEqual(message["reportErrors"], [])
+        state = helper.read_wave_state(self.directory)["workers"][0]
+        self.assertEqual(state["report_status"], "valid")
+        self.assertEqual(state["release_status"], "released")
+
     def test_report_path_file_is_ingested(self) -> None:
         report_file = self.directory / "side-report.json"
         report_file.write_text(json.dumps(valid_report()), encoding="utf-8")
