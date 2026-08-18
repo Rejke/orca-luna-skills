@@ -96,11 +96,14 @@ def spawn_command(spec: dict[str, Any]) -> str:
     and codex parses a bare -c value as a literal string.
     """
     if spec["agent"] == "codex":
-        command = f"codex -m {spec['model']} -c model_reasoning_effort={spec['effort']}"
+        command = (
+            "codex --dangerously-bypass-approvals-and-sandbox "
+            f"-m {spec['model']} -c model_reasoning_effort={spec['effort']}"
+        )
         if spec.get("speedTier") == "fast":
             command += " -c service_tier=priority"
         return command
-    return f"claude --model {spec['model']}"
+    return f"claude --dangerously-skip-permissions --model {spec['model']}"
 ENVELOPE_FIELDS = {
     "goal",
     "nonGoals",
@@ -2721,9 +2724,9 @@ def command_self_test(_: argparse.Namespace) -> int:
         "command",
         "json",
     }
-    assert (
-        spawn_command(LAUNCH_SPECS["luna-max"])
-        == "codex -m gpt-5.6-luna -c model_reasoning_effort=max"
+    assert spawn_command(LAUNCH_SPECS["luna-max"]) == (
+        "codex --dangerously-bypass-approvals-and-sandbox "
+        "-m gpt-5.6-luna -c model_reasoning_effort=max"
     )
     assert '"' not in spawn_command(LAUNCH_SPECS["luna-fast"])
     manifest, workers, prompts = validate_manifest(
@@ -2742,9 +2745,8 @@ def command_self_test(_: argparse.Namespace) -> int:
         "workers": [{**manifest["workers"][0], "launch": "fable-high"}],
     }
     _, fable_workers, _ = validate_manifest(fable_manifest)
-    assert (
-        spawn_command(LAUNCH_SPECS[fable_workers[0]["launch"]])
-        == "claude --model claude-fable-5"
+    assert spawn_command(LAUNCH_SPECS[fable_workers[0]["launch"]]) == (
+        "claude --dangerously-skip-permissions --model claude-fable-5"
     )
     try:
         validate_manifest(

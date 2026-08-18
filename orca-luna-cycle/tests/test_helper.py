@@ -393,11 +393,12 @@ class LaunchPolicyTests(unittest.TestCase):
     def test_spawn_commands_carry_exact_model_and_effort(self) -> None:
         self.assertEqual(
             helper.spawn_command(helper.LAUNCH_SPECS["sol-xhigh"]),
-            "codex -m gpt-5.6-sol -c model_reasoning_effort=xhigh",
+            "codex --dangerously-bypass-approvals-and-sandbox "
+            "-m gpt-5.6-sol -c model_reasoning_effort=xhigh",
         )
         self.assertEqual(
             helper.spawn_command(helper.LAUNCH_SPECS["fable-high"]),
-            "claude --model claude-fable-5",
+            "claude --dangerously-skip-permissions --model claude-fable-5",
         )
         self.assertIn(
             "service_tier=priority",

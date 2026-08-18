@@ -71,18 +71,21 @@ when Sol does not know enough to split the work safely.
 ## Launch policy
 
 The optional worker field `launch` picks one fixed spec. The helper rejects other
-values and spawns each agent with that exact command:
+values and spawns each agent with that exact command. Workers run without the
+agent's own sandbox and approval prompts (`--dangerously-bypass-approvals-and-sandbox`
+for codex, `--dangerously-skip-permissions` for claude): nobody watches a worker
+terminal to click an approval, so a sandbox prompt would hang the worker forever.
+The worktree split and the role rules are the safety boundary.
 
-- `luna-max` — `codex -m gpt-5.6-luna -c model_reasoning_effort=max`. The default
+- `luna-max` — codex `gpt-5.6-luna` at `model_reasoning_effort=max`. The default
   for scout, implementer, integrator, and fixer. Use it for frontend business logic
   and all backend work.
 - `luna-fast` — the same Luna `max` plus `-c service_tier=priority` (the 1.5x speed
   tier; costs more usage). Use it only when the user asked for fast mode. Valid for
   the same roles as `luna-max`.
-- `fable-high` — `claude --model claude-fable-5`. Use it for frontend UI work
-  (components, layout, styling, interaction). Valid for the same roles as
-  `luna-max`.
-- `sol-xhigh` — `codex -m gpt-5.6-sol -c model_reasoning_effort=xhigh`. Fixed for
+- `fable-high` — claude `claude-fable-5`. Use it for frontend UI work (components,
+  layout, styling, interaction). Valid for the same roles as `luna-max`.
+- `sol-xhigh` — codex `gpt-5.6-sol` at `model_reasoning_effort=xhigh`. Fixed for
   every reviewer and anti-slop worker. No override. All review runs on Sol, never on
   Luna.
 
