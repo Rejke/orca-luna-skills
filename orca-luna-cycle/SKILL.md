@@ -130,8 +130,12 @@ them in acceptance criteria, constraints, or checks. A paraphrase drifts and
 becomes a second, conflicting contract. One acceptance criterion is one testable
 statement, not a paragraph. To protect earlier work, write one line — "Preserve
 all behavior accepted at <reviewedAnchor>" — instead of listing past wins; that
-list grows every wave and never shrinks. Aim for under 6000 characters per worker
-spec; preflight and `--dry-run` flag any spec over 8000.
+list grows every wave and never shrinks. FINDINGS is the canonical list: refer to
+findings by number in acceptance criteria and checks ("AC1: finding 1 is
+root-cause fixed with a production-entrypoint regression test"); do not retell a
+finding's content there, and do not repeat the owned file list outside SCOPE and
+OWNERSHIP. Aim for under 6000 characters per worker spec; preflight and
+`--dry-run` flag any spec over 8000.
 
 Print the JSON Schema and a valid example; do not read the helper source:
 
