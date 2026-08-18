@@ -167,8 +167,8 @@ def command_scaffold(args: argparse.Namespace) -> int:
                 "status": "scaffolded",
                 "note": str(note),
                 "placeholders": len(PLACEHOLDER.findall(text)),
-                "next": "replace every <fill: ...> with journal-cited judgment,"
-                " then run archive",
+                "next": "replace every <fill: ...> with findings cited from the"
+                " journal, then run archive",
             }
         )
     )
@@ -184,7 +184,8 @@ def command_archive(args: argparse.Namespace) -> int:
     remaining = PLACEHOLDER.findall(text)
     if remaining:
         raise HelperError(
-            f"{len(remaining)} unfilled placeholder(s) remain; judgment is not optional"
+            f"{len(remaining)} placeholder(s) still unfilled; "
+            "fill each one or delete its section"
         )
     run_id = load_json(directory / "final.json").get("runId", "unknown-run")
     safe_run = re.sub(r"[^A-Za-z0-9_-]", "_", str(run_id))

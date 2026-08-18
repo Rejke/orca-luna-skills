@@ -27,13 +27,18 @@ except ImportError:  # pragma: no cover - Windows fallback keeps atomic writes.
 
 LAUNCH_SPECS = {
     "luna-max": {"agent": "codex", "model": "gpt-5.6-luna", "effort": "max"},
-    "luna-fast": {"agent": "codex", "model": "gpt-5.6-luna[fast]", "effort": "max"},
+    "luna-fast": {
+        "agent": "codex",
+        "model": "gpt-5.6-luna",
+        "effort": "max",
+        "speedTier": "fast",
+    },
     "sol-xhigh": {"agent": "codex", "model": "gpt-5.6-sol", "effort": "xhigh"},
     "fable-high": {"agent": "claude", "model": "claude-fable-5", "effort": "high"},
 }
 # First alias is the role default; review roles are pinned and reject overrides.
-# luna-fast is Luna max reasoning on the 1.5x fast service tier (bracket suffix in
-# the opaque model id); legal only when the user explicitly asked for fast mode.
+# luna-fast is Luna max reasoning on the 1.5x fast service tier; legal only when
+# the user explicitly asked for fast mode.
 ROLE_LAUNCHES = {
     "scout": ("luna-max", "luna-fast", "fable-high"),
     "implementer": ("luna-max", "luna-fast", "fable-high"),
@@ -82,6 +87,7 @@ REQUIRED_ORCA_COMMANDS = {
         "agent",
         "model",
         "effort",
+        "fast",
         "name",
         "display-name",
         "setup",
@@ -907,9 +913,10 @@ def worker_start_args(
         spec["model"],
         "--effort",
         spec["effort"],
-        "--run",
-        run_id,
     ]
+    if spec.get("speedTier") == "fast":
+        args.append("--fast")
+    args.extend(["--run", run_id])
     if worktree in {"new-child", "new-top-level"}:
         args.extend(
             [
@@ -1031,7 +1038,7 @@ def command_contract_check(context: Any) -> tuple[list[dict[str, Any]], str]:
     return checks, contract_hash
 
 
-def codex_model_catalog() -> tuple[dict[str, set[str]], str | None]:
+def codex_model_catalog() -> tuple[dict[str, dict[str, set[str]]], str | None]:
     configured = os.environ.get("ORCA_LUNA_CODEX_COMMAND", "codex").strip()
     command = shlex.split(configured)
     if not command:
@@ -1076,7 +1083,7 @@ def codex_model_catalog() -> tuple[dict[str, set[str]], str | None]:
 def launch_checks(workers: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Verify every launch spec the wave uses; the codex catalog is read once."""
     checks: list[dict[str, Any]] = []
-    codex_catalog: dict[str, set[str]] | None = None
+    codex_catalog: dict[str, dict[str, set[str]]] | None = None
     codex_error: str | None = None
     for alias in sorted({worker["launch"] for worker in workers}):
         spec = LAUNCH_SPECS[alias]
@@ -1087,9 +1094,8 @@ def launch_checks(workers: list[dict[str, Any]]) -> list[dict[str, Any]]:
             if codex_error is not None:
                 checks.append({"name": name, "passed": False, "error": codex_error})
                 continue
-            base_model, bracket, tier = spec["model"].partition("[")
-            speed_tier = tier[:-1] if bracket and tier.endswith("]") else None
-            entry = (codex_catalog or {}).get(base_model, {})
+            speed_tier = spec.get("speedTier")
+            entry = (codex_catalog or {}).get(spec["model"], {})
             efforts = entry.get("efforts", set())
             speed_tiers = entry.get("speedTiers", set())
             checks.append(
@@ -1169,6 +1175,8 @@ def preflight_manifest(
         "orchestration.contract.v1",
         "orchestration.worker-launch-preferences.v1",
     }
+    if any(LAUNCH_SPECS[worker["launch"]].get("speedTier") for worker in workers):
+        required_capabilities.add("orchestration.worker-fast-mode.v1")
     checks.append(
         {
             "name": "runtime-capabilities",
@@ -3030,8 +3038,9 @@ def command_self_test(_: argparse.Namespace) -> int:
     }
     assert LAUNCH_SPECS["luna-fast"] == {
         "agent": "codex",
-        "model": "gpt-5.6-luna[fast]",
+        "model": "gpt-5.6-luna",
         "effort": "max",
+        "speedTier": "fast",
     }
     assert ROLE_LAUNCHES["reviewer"] == ("sol-xhigh",)
     assert ROLE_LAUNCHES["antislop"] == ("sol-xhigh",)
@@ -3119,6 +3128,12 @@ def command_self_test(_: argparse.Namespace) -> int:
     }
     _, overridden_workers, _ = validate_manifest(overridden)
     assert overridden_workers[0]["launch"] == "luna-fast"
+    fast_args = worker_start_args(
+        overridden_workers[0], "task_fast", "01 implementer · x", "run_1"
+    )
+    assert fast_args[fast_args.index("--model") + 1] == "gpt-5.6-luna"
+    assert fast_args[fast_args.index("--effort") + 1] == "max"
+    assert "--fast" in fast_args
     orphan_worktree = {
         **overridden,
         "workers": [

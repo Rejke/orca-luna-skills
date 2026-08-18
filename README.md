@@ -1,17 +1,18 @@
 # orca-luna-skills
 
-Two companion agent skills for supervised multi-model swarm orchestration in
+Two agent skills for running supervised multi-model swarms in
 [Orca](https://orca.dev)-managed worktrees.
 
-- **orca-luna-cycle** — a GPT-5.6 Sol `xhigh` controller dispatches up to 10
-  fresh workers under a pinned launch policy (Luna `max`, opt-in fast tier /
-  Claude Fable 5 `high` for implementation, Sol `xhigh` pinned for all review),
-  with a durable receipt journal, push-only wake flow, reviewed-anchor gate,
-  and mechanical finalize reconciliation.
-- **orca-luna-feedback** — evidence-grounded post-wave retro notes: a helper
-  scaffolds mechanical facts from the wave journal, the controller fills
-  verdicts and manifest-executable adjustments, and archiving refuses unfilled
-  placeholders. Its durable log feeds maintenance of the cycle skill.
+- **orca-luna-cycle** — one GPT-5.6 Sol `xhigh` controller runs up to 10 fresh
+  workers. Each role has a fixed model: Luna `max` for implementation (with an
+  opt-in fast tier), Claude Fable 5 `high` for frontend UI, Sol `xhigh` for all
+  review. Every step is written to receipt files. Workers ping the controller;
+  the controller never polls. Waves cannot change code on unreviewed commits.
+  A final check confirms the wave completed cleanly.
+- **orca-luna-feedback** — feedback notes after each wave. A script fills in
+  the facts from the wave's files; the controller adds verdicts and concrete
+  changes for the next wave. A note cannot be archived while blanks remain.
+  The log feeds maintenance of the cycle skill.
 
 ## Install
 
@@ -19,7 +20,7 @@ Two companion agent skills for supervised multi-model swarm orchestration in
 npx skills add rejke/orca-luna-skills
 ```
 
-Or install a single skill:
+Or install one skill:
 
 ```bash
 npx skills add rejke/orca-luna-skills --skill orca-luna-cycle
@@ -28,7 +29,7 @@ npx skills add rejke/orca-luna-skills --skill orca-luna-cycle
 ## Requirements
 
 - Orca >= 1.4.184 with the orchestration contract, plus its CLI on PATH
-- `codex` CLI (models are verified against `codex debug models` at preflight)
+- `codex` CLI (models are checked against `codex debug models` before launch)
 - `claude` CLI on PATH only if you use the `fable-high` launch spec
 - `uv` on PATH (helpers run via `uv run --no-project`, stdlib-only Python)
 

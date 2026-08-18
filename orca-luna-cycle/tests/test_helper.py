@@ -378,6 +378,36 @@ class LaunchPolicyTests(unittest.TestCase):
         self.assertEqual(args[args.index("--model") + 1], "claude-fable-5")
         self.assertEqual(args[args.index("--effort") + 1], "high")
 
+    def test_luna_fast_keeps_the_base_model_and_uses_fast_flag(self) -> None:
+        manifest = {
+            **self.manifest,
+            "workers": [{**self.manifest["workers"][0], "launch": "luna-fast"}],
+        }
+        _, workers, _ = helper.validate_manifest(manifest)
+        args = helper.worker_start_args(workers[0], "task_1", "label", "run_1")
+        self.assertEqual(args[args.index("--model") + 1], "gpt-5.6-luna")
+        self.assertEqual(args[args.index("--effort") + 1], "max")
+        self.assertIn("--fast", args)
+
+    def test_luna_fast_preflight_checks_effort_and_speed_tier(self) -> None:
+        worker = {"launch": "luna-fast"}
+        catalog = {
+            "gpt-5.6-luna": {
+                "efforts": {"low", "max"},
+                "speedTiers": {"fast"},
+            }
+        }
+        with patch.object(helper, "codex_model_catalog", return_value=(catalog, None)):
+            check = helper.launch_checks([worker])[0]
+        self.assertTrue(check["passed"])
+        self.assertEqual(check["model"], "gpt-5.6-luna")
+        self.assertEqual(check["speedTier"], "fast")
+
+        catalog["gpt-5.6-luna"]["speedTiers"] = set()
+        with patch.object(helper, "codex_model_catalog", return_value=(catalog, None)):
+            check = helper.launch_checks([worker])[0]
+        self.assertFalse(check["passed"])
+
 
 class ContractTests(unittest.TestCase):
     def test_used_run_flags_are_in_preflight_contract(self) -> None:
