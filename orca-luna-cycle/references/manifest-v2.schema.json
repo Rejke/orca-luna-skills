@@ -82,7 +82,7 @@
         "findings": {"type": "array", "items": {}},
         "handoffs": {"type": "array", "items": {}},
         "lens": {"type": "string"},
-        "launch": {"enum": ["luna-max", "terra-xhigh", "sol-xhigh", "fable-high"]},
+        "launch": {"enum": ["luna-max", "luna-fast", "sol-xhigh", "fable-high"]},
         "worktree": {"type": "string", "minLength": 1},
         "mutation": {"enum": ["allowed", "forbidden"]},
         "name": {"type": "string", "minLength": 1},
@@ -102,7 +102,7 @@
           },
           "then": {
             "properties": {
-              "launch": {"enum": ["luna-max", "terra-xhigh", "fable-high"]}
+              "launch": {"enum": ["luna-max", "luna-fast", "fable-high"]}
             }
           }
         }

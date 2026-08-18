@@ -29,6 +29,11 @@ and their compact task/report contract.
 - Parallel mutators require disjoint ownership and separate Orca worktrees. Multiple
   strictly read-only workers may share `current`; they must not build, format, install,
   generate caches, or mutate files/services.
+- Worktree hygiene: single-mutator waves default to `current`. A mutator in a new
+  worktree requires an integrator in the same wave (the helper refuses otherwise), and
+  after the Sol gate every wave worktree is integrated exactly once and removed before
+  the next wave — accumulated unmerged worktrees are a defect, not a byproduct.
+  `finalize-wave` lists them in `final.json#createdWorktrees`.
 - Preserve user state. Never reset, clean, stash, discard, push, publish, or open a PR.
 - Never mutate an unreviewed anchor silently: a wave with mutators must declare
   `envelope.reviewedAnchor` (equal to `baseAnchor`, PASSed by a fresh reviewer) or an
@@ -37,8 +42,13 @@ and their compact task/report contract.
   receipts; terminal handles are routing only.
 - Never poll the coordinator inbox. Workers queue a wake-only continuation after accepted
   lifecycle mail; Sol drains only after that real input arrives.
-- Never patch the helper while its Run has Tasks. A rejected exact launch is a verified
-  blocker for that wave, not permission to guess or downgrade.
+- Preflight archives the exact dispatching helper into `<receipts>/runtime/helper.py`
+  and pins its SHA-256 in the journal; every mid-wave command (drain, notify, stop,
+  resume, finalize) for that wave runs the archived copy — the wake prompt already
+  points to it — so upgrading the skill never strands an in-flight Run. The live
+  helper refuses waves journaled by a different build and names the archived path.
+  A rejected exact launch is a verified blocker for that wave, not permission to
+  guess or downgrade.
 
 ## Load the live contract once
 
@@ -82,9 +92,10 @@ receipts:
 - `luna-max` — agent `codex`, `gpt-5.6-luna` at `max`. Default for scout,
   implementer, integrator, and fixer. Use it for frontend business logic and all
   backend work.
-- `terra-xhigh` — agent `codex`, `gpt-5.6-terra` at `xhigh`. Opt-in balanced
-  speed/cost/intelligence tier for implementation-side roles: harder shards that
-  outgrow Luna but do not need Sol.
+- `luna-fast` — agent `codex`, `gpt-5.6-luna[fast]` at `max`: identical Luna `max`
+  reasoning on the 1.5x fast service tier (higher usage cost). Legal only when the
+  user explicitly asked for fast mode; never chosen silently. Valid for
+  implementation-side roles.
 - `fable-high` — agent `claude`, `claude-fable-5` at `high`. Opt-in for frontend UI
   development shards (components, layout, styling, interaction); valid for the same
   implementation-side roles.
@@ -227,7 +238,10 @@ or `BLOCKED`.
 
 Workers use Orca's already-injected opaque lifecycle command/IDs and add only a compact
 `--payload` report; the whole report travels in that single `--payload`, which is
-mutually exclusive with structured payload flags like `--files-modified`. "Exactly one
+mutually exclusive with structured payload flags like `--files-modified`. As a safety
+net the drain also ingests a report from JSON in `--body` or from an absolute
+`--report-path` file (size-capped) — but `--payload` remains the contract workers are
+told to use. "Exactly one
 completion" counts accepted completions: a send the CLI rejects with no effects is
 corrected from the error message and resent once, never investigated through CLI
 internals. Do not paste or reconstruct Task/Dispatch IDs in task prose. A
@@ -276,7 +290,9 @@ The cancel marker is written before Orca calls. Known Dispatches are stopped and
 but undispatched Tasks are blocked. If a race returns `cancel_pending`, allow the interrupted
 call to settle and run the same idempotent command again. Never resume a cancelled wave.
 
-Resume only proven non-ambiguous pending steps from the same journal:
+Resume only proven non-ambiguous pending steps from the same journal. If the skill was
+upgraded since dispatch, substitute `<receipts>/runtime/helper.py` for the skill path in
+these commands:
 
 ```text
 uv run --no-project <skill>/scripts/orca_luna_worker.py resume-wave \

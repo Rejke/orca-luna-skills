@@ -27,16 +27,18 @@ except ImportError:  # pragma: no cover - Windows fallback keeps atomic writes.
 
 LAUNCH_SPECS = {
     "luna-max": {"agent": "codex", "model": "gpt-5.6-luna", "effort": "max"},
-    "terra-xhigh": {"agent": "codex", "model": "gpt-5.6-terra", "effort": "xhigh"},
+    "luna-fast": {"agent": "codex", "model": "gpt-5.6-luna[fast]", "effort": "max"},
     "sol-xhigh": {"agent": "codex", "model": "gpt-5.6-sol", "effort": "xhigh"},
     "fable-high": {"agent": "claude", "model": "claude-fable-5", "effort": "high"},
 }
 # First alias is the role default; review roles are pinned and reject overrides.
+# luna-fast is Luna max reasoning on the 1.5x fast service tier (bracket suffix in
+# the opaque model id); legal only when the user explicitly asked for fast mode.
 ROLE_LAUNCHES = {
-    "scout": ("luna-max", "terra-xhigh", "fable-high"),
-    "implementer": ("luna-max", "terra-xhigh", "fable-high"),
-    "integrator": ("luna-max", "terra-xhigh", "fable-high"),
-    "fixer": ("luna-max", "terra-xhigh", "fable-high"),
+    "scout": ("luna-max", "luna-fast", "fable-high"),
+    "implementer": ("luna-max", "luna-fast", "fable-high"),
+    "integrator": ("luna-max", "luna-fast", "fable-high"),
+    "fixer": ("luna-max", "luna-fast", "fable-high"),
     "reviewer": ("sol-xhigh",),
     "antislop": ("sol-xhigh",),
 }
@@ -356,7 +358,7 @@ def runtime_prompt(prompt: str, directory: Path) -> str:
             "uv",
             "run",
             "--no-project",
-            str(Path(__file__).resolve()),
+            str(archived_helper(directory)),
             "notify-controller",
             "--receipt-dir",
             str(directory),
@@ -593,6 +595,22 @@ def validate_manifest(
             "implementation waves require at least one mutator; "
             "pure review or scout waves must use audit or benchmark mode"
         )
+    new_worktree_mutators = [
+        worker["id"]
+        for worker in normalized_workers
+        if worker["role"] in {"implementer", "fixer"}
+        and worker["worktree"] in {"new-child", "new-top-level"}
+    ]
+    has_integrator = any(
+        worker["role"] == "integrator" for worker in normalized_workers
+    )
+    if new_worktree_mutators and not has_integrator:
+        raise HelperError(
+            "mutators in new worktrees ("
+            + ", ".join(new_worktree_mutators)
+            + ") require an integrator in the same wave; run a single mutator in "
+            "current instead of accumulating unmerged worktrees"
+        )
     if has_mutators and not reviewed_anchor and not review_override:
         raise HelperError(
             "mutating waves require envelope.reviewedAnchor (a baseAnchor that a "
@@ -797,10 +815,16 @@ def read_wave_state(directory: Path) -> dict[str, Any]:
         raise HelperError(
             f"invalid or unsupported wave state in {directory / STATE_FILE}"
         )
+    expected_helper = state.get("helper_sha256")
+    if expected_helper and expected_helper != helper_digest():
+        raise HelperError(
+            "this wave was dispatched by a different helper build; run the "
+            f"archived copy instead: {archived_helper(directory)}"
+        )
     if state.get("launch_specs") != LAUNCH_SPECS:
         raise HelperError(
-            "wave was journaled under a different launch policy; "
-            "never patch the helper while its Run has Tasks"
+            "wave was journaled under a different launch policy; use the "
+            f"archived helper copy: {archived_helper(directory)}"
         )
     return state
 
@@ -904,6 +928,22 @@ def worker_start_args(
 def manifest_digest(manifest: dict[str, Any]) -> str:
     encoded = compact_json(manifest).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def helper_digest() -> str:
+    return hashlib.sha256(Path(__file__).resolve().read_bytes()).hexdigest()
+
+
+def archived_helper(directory: Path) -> Path:
+    return directory / "runtime" / "helper.py"
+
+
+def archive_helper(directory: Path) -> Path:
+    """Freeze the dispatching helper so mid-wave commands survive skill upgrades."""
+    destination = archived_helper(directory)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(Path(__file__).resolve(), destination)
+    return destination
 
 
 def ensure_journal(directory: Path) -> None:
@@ -1014,14 +1054,21 @@ def codex_model_catalog() -> tuple[dict[str, set[str]], str | None]:
     except json.JSONDecodeError:
         return {}, "codex debug models returned non-JSON output"
     models = catalog.get("models", []) if isinstance(catalog, dict) else []
-    supported: dict[str, set[str]] = {}
+    supported: dict[str, dict[str, set[str]]] = {}
     for item in models:
         if not isinstance(item, dict) or not isinstance(item.get("slug"), str):
             continue
         supported[item["slug"]] = {
-            level.get("effort")
-            for level in item.get("supported_reasoning_levels", [])
-            if isinstance(level, dict) and isinstance(level.get("effort"), str)
+            "efforts": {
+                level.get("effort")
+                for level in item.get("supported_reasoning_levels", [])
+                if isinstance(level, dict) and isinstance(level.get("effort"), str)
+            },
+            "speedTiers": {
+                tier
+                for tier in item.get("additional_speed_tiers", [])
+                if isinstance(tier, str)
+            },
         }
     return supported, None
 
@@ -1040,14 +1087,21 @@ def launch_checks(workers: list[dict[str, Any]]) -> list[dict[str, Any]]:
             if codex_error is not None:
                 checks.append({"name": name, "passed": False, "error": codex_error})
                 continue
-            efforts = (codex_catalog or {}).get(spec["model"], set())
+            base_model, bracket, tier = spec["model"].partition("[")
+            speed_tier = tier[:-1] if bracket and tier.endswith("]") else None
+            entry = (codex_catalog or {}).get(base_model, {})
+            efforts = entry.get("efforts", set())
+            speed_tiers = entry.get("speedTiers", set())
             checks.append(
                 {
                     "name": name,
-                    "passed": spec["effort"] in efforts,
+                    "passed": spec["effort"] in efforts
+                    and (speed_tier is None or speed_tier in speed_tiers),
                     "model": spec["model"],
                     "effort": spec["effort"],
+                    "speedTier": speed_tier,
                     "supportedEfforts": sorted(efforts),
+                    "supportedSpeedTiers": sorted(speed_tiers),
                 }
             )
         else:
@@ -1289,9 +1343,11 @@ def command_preflight(args: argparse.Namespace) -> int:
     if (directory / STATE_FILE).exists():
         raise HelperError("cannot preflight over an existing wave state")
     ensure_journal(directory)
+    archived = archive_helper(directory)
     save_json(directory / "manifest.json", manifest)
     live_prompts = [runtime_prompt(prompt, directory) for prompt in prompts]
     receipt = preflight_manifest(manifest, workers)
+    receipt["helper"] = {"sha256": helper_digest(), "archived": str(archived)}
     receipt["workers"] = [
         {
             "id": worker["id"],
@@ -1335,6 +1391,11 @@ def verify_preflight(
     digest = manifest_digest(manifest)
     if previous.get("manifestSha256") != digest:
         raise HelperError("manifest changed after preflight; run preflight again")
+    previous_helper = previous.get("helper", {})
+    if previous_helper.get("sha256") != helper_digest():
+        raise HelperError("helper changed after preflight; run preflight again")
+    if not archived_helper(directory).exists():
+        archive_helper(directory)
     for prompt in prompts:
         runtime_prompt(prompt, directory)
 
@@ -1775,6 +1836,7 @@ def initialize_wave_state(
         {
             "version": STATE_VERSION,
             "manifest_sha256": manifest_digest(manifest),
+            "helper_sha256": helper_digest(),
             "mode": manifest["mode"],
             "objective": manifest["objective"],
             "launch_specs": LAUNCH_SPECS,
@@ -2088,6 +2150,21 @@ def worker_for_message(
     return None
 
 
+MAX_REPORT_FILE_BYTES = 262_144
+
+
+def load_report_file(raw_path: str) -> Any:
+    path = Path(raw_path)
+    if not path.is_absolute():
+        return None
+    try:
+        if path.stat().st_size > MAX_REPORT_FILE_BYTES:
+            return None
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
 def extract_report(node: dict[str, Any]) -> Any:
     payload = decoded_message_payload(node)
     nested = decode_json(payload.get("report"))
@@ -2098,6 +2175,12 @@ def extract_report(node: dict[str, Any]) -> Any:
     body = decode_json(message_value(node, "body"))
     if isinstance(body, dict) and "reportSchemaVersion" in body:
         return body
+    for source in (payload, node):
+        path_value = message_value(source, "report_path", "reportPath")
+        if isinstance(path_value, str) and path_value.strip():
+            file_report = load_report_file(path_value.strip())
+            if isinstance(file_report, dict):
+                return file_report
     return None
 
 
@@ -2876,6 +2959,15 @@ def command_finalize_wave(args: argparse.Namespace) -> int:
     }
     anchor = anchor_check(manifest, state)
     checks["anchorPreservedOrDelegated"] = anchor.get("passed") is True
+    created_worktrees = [
+        {
+            "workerId": record.get("worker_id"),
+            "worktreeId": record.get("worktree_id"),
+            "selector": spec.get("worktree"),
+        }
+        for record, spec in zip(workers, manifest.get("workers", []))
+        if spec.get("worktree") in {"new-child", "new-top-level"}
+    ]
     mechanical_ok = all(checks.values())
     set_wave_phase(directory, "finalized" if mechanical_ok else "finalize_incomplete")
     state = read_wave_state(directory)
@@ -2899,7 +2991,8 @@ def command_finalize_wave(args: argparse.Namespace) -> int:
             if worker.get("verdict") is not None
         ],
         "workers": wave_records(state),
-        "note": "Content verdicts remain inputs to the Sol gate; audit FAIL does not mean orchestration failed.",
+        "createdWorktrees": created_worktrees,
+        "note": "Content verdicts remain inputs to the Sol gate; audit FAIL does not mean orchestration failed. Created worktrees must be integrated and removed before the next wave.",
         "createdAt": time.time(),
     }
     save_json(directory / "final.json", final)
@@ -2911,6 +3004,7 @@ def command_finalize_wave(args: argparse.Namespace) -> int:
                 "checks": checks,
                 "unresolved": unresolved,
                 "contentVerdicts": final["contentVerdicts"],
+                "createdWorktrees": created_worktrees,
                 "finalReceipt": str(directory / "final.json"),
             }
         )
@@ -2934,14 +3028,15 @@ def command_self_test(_: argparse.Namespace) -> int:
         "model": "claude-fable-5",
         "effort": "high",
     }
-    assert LAUNCH_SPECS["terra-xhigh"] == {
+    assert LAUNCH_SPECS["luna-fast"] == {
         "agent": "codex",
-        "model": "gpt-5.6-terra",
-        "effort": "xhigh",
+        "model": "gpt-5.6-luna[fast]",
+        "effort": "max",
     }
     assert ROLE_LAUNCHES["reviewer"] == ("sol-xhigh",)
     assert ROLE_LAUNCHES["antislop"] == ("sol-xhigh",)
-    assert "terra-xhigh" in ROLE_LAUNCHES["implementer"]
+    assert "luna-fast" in ROLE_LAUNCHES["implementer"]
+    assert all(launches[0] != "luna-fast" for launches in ROLE_LAUNCHES.values())
     assert REQUIRED_ORCA_COMMANDS["orchestration check"] == {"run", "ack", "json"}
     manifest, workers, prompts = validate_manifest(
         load_json(REFERENCES / "manifest-v2.example.json")
@@ -2983,7 +3078,7 @@ def command_self_test(_: argparse.Namespace) -> int:
                 **manifest["workers"][0],
                 "id": "impl",
                 "role": "implementer",
-                "launch": "terra-xhigh",
+                "launch": "luna-fast",
                 "mutation": "allowed",
             }
         ],
@@ -3023,7 +3118,41 @@ def command_self_test(_: argparse.Namespace) -> int:
         },
     }
     _, overridden_workers, _ = validate_manifest(overridden)
-    assert overridden_workers[0]["launch"] == "terra-xhigh"
+    assert overridden_workers[0]["launch"] == "luna-fast"
+    orphan_worktree = {
+        **overridden,
+        "workers": [
+            {
+                **overridden["workers"][0],
+                "worktree": "new-child",
+                "name": "impl-shard",
+            }
+        ],
+    }
+    try:
+        validate_manifest(orphan_worktree)
+    except HelperError as exc:
+        assert "integrator" in str(exc)
+    else:
+        raise AssertionError("new-worktree mutator without integrator was accepted")
+    paired = {
+        **orphan_worktree,
+        "workers": [
+            *orphan_worktree["workers"],
+            {
+                "id": "merge",
+                "role": "integrator",
+                "goal": "Integrate the shard exactly once.",
+                "criteria": orphan_worktree["workers"][0]["criteria"],
+                "mutation": "allowed",
+            },
+        ],
+    }
+    _, paired_workers, _ = validate_manifest(paired)
+    assert [worker["role"] for worker in paired_workers] == [
+        "implementer",
+        "integrator",
+    ]
     both_declared = {
         **overridden,
         "envelope": {

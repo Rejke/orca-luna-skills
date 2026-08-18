@@ -92,6 +92,14 @@ def scaffold_text(directory: Path) -> str:
         f"- failed checks: {', '.join(failed) or 'none'}",
         f"- unresolved: {', '.join(final.get('unresolved') or []) or 'none'}",
         f"- content verdicts: {verdicts or 'none'}",
+    ]
+    created_worktrees = final.get("createdWorktrees") or []
+    if created_worktrees:
+        lines.append(
+            f"- created worktrees: {len(created_worktrees)} — verify each was"
+            " integrated exactly once and removed"
+        )
+    lines += [
         "",
         "## Verdict",
         "",

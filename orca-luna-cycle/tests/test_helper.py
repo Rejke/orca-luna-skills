@@ -199,6 +199,16 @@ class DeliveryTests(unittest.TestCase):
         self.assertIn("notify-controller", prompt)
         self.assertIn("append the following with &&", prompt)
         self.assertNotIn("--wait", prompt)
+        self.assertIn(str(self.directory / "runtime" / "helper.py"), prompt)
+
+    def test_foreign_helper_build_is_refused_with_archived_path(self) -> None:
+        helper.mutate_wave_state(
+            self.directory,
+            lambda state: state.update({"helper_sha256": "0" * 64}),
+        )
+        with self.assertRaises(helper.HelperError) as context:
+            helper.read_wave_state(self.directory)
+        self.assertIn("runtime/helper.py", str(context.exception))
 
     def test_duplicate_completion_never_mutates_accepted_state(self) -> None:
         payload = valid_report(
@@ -277,6 +287,24 @@ class DeliveryTests(unittest.TestCase):
         self.assertEqual(helper.delivery_actions(result), [message])
         state = helper.read_wave_state(self.directory)["workers"][0]
         self.assertIsNone(state["completion_accepted"])
+
+    def test_report_path_file_is_ingested(self) -> None:
+        report_file = self.directory / "side-report.json"
+        report_file.write_text(json.dumps(valid_report()), encoding="utf-8")
+        payload = {
+            "taskId": "task_expected",
+            "dispatchId": "ctx_expected",
+            "outcome": "succeeded",
+            "reportPath": str(report_file),
+        }
+        release = {"ok": True, "result": {"state": "released"}}
+        with patch.object(helper, "call_orca", return_value=(0, release, "")):
+            result = helper.process_delivery(self.directory, delivery(payload), "test")
+        message = result["messages"][0]
+        self.assertTrue(message["accepted"])
+        self.assertEqual(message["reportErrors"], [])
+        state = helper.read_wave_state(self.directory)["workers"][0]
+        self.assertEqual(state["report_status"], "valid")
 
     def test_report_summary_is_clamped(self) -> None:
         payload = valid_report(

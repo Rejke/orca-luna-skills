@@ -4,7 +4,7 @@ Two companion agent skills for supervised multi-model swarm orchestration in
 [Orca](https://orca.dev)-managed worktrees.
 
 - **orca-luna-cycle** — a GPT-5.6 Sol `xhigh` controller dispatches up to 10
-  fresh workers under a pinned launch policy (Luna `max` / Terra `xhigh` /
+  fresh workers under a pinned launch policy (Luna `max`, opt-in fast tier /
   Claude Fable 5 `high` for implementation, Sol `xhigh` pinned for all review),
   with a durable receipt journal, push-only wake flow, reviewed-anchor gate,
   and mechanical finalize reconciliation.
