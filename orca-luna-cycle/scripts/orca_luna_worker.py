@@ -270,6 +270,30 @@ def compact_json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
+def render_finding(item: Any) -> str:
+    """Render one finding for a worker prompt; raw JSON is hard to read."""
+    if isinstance(item, str):
+        return f"- {item}"
+    if not isinstance(item, dict) or not isinstance(item.get("title"), str):
+        return f"- {compact_json(item)}"
+    severity = item.get("severity")
+    header = f"[{severity}] " if isinstance(severity, str) else ""
+    lines = [f"- {header}{item['title'].strip()}"]
+    for key in ("evidence", "location", "recommendation"):
+        value = item.get(key)
+        if isinstance(value, str) and value.strip():
+            prefix = "" if key == "evidence" else f"{key}: "
+            lines.append(f"  {prefix}{value.strip()}")
+    extras = {
+        key: value
+        for key, value in item.items()
+        if key not in {"severity", "title", "evidence", "location", "recommendation"}
+    }
+    if extras:
+        lines.append(f"  {compact_json(extras)}")
+    return "\n".join(lines)
+
+
 def render_value(value: Any) -> str:
     if isinstance(value, str):
         return value.strip()
@@ -352,7 +376,13 @@ def render_prompt(worker: dict[str, Any], envelope: dict[str, Any], mode: str) -
         ("context", "CONTEXT"),
     ):
         if worker.get(key) not in (None, "", [], {}):
-            parts.append(f"{label}\n{render_value(worker[key])}")
+            if key == "findings":
+                parts.append(
+                    "FINDINGS\n"
+                    + "\n".join(render_finding(item) for item in worker["findings"])
+                )
+            else:
+                parts.append(f"{label}\n{render_value(worker[key])}")
     if envelope.get("nonGoals"):
         parts.append(f"NON-GOALS\n{render_value(envelope['nonGoals'])}")
     state = {

@@ -373,6 +373,43 @@ class LearnedRuleTests(unittest.TestCase):
                     }
                 )
 
+    def test_findings_render_readably_not_as_raw_json(self) -> None:
+        manifest = {
+            **self.manifest,
+            "mode": "implementation",
+            "envelope": {
+                **self.manifest["envelope"],
+                "reviewOverride": "repair wave for review findings",
+            },
+            "workers": [
+                {
+                    key: value
+                    for key, value in {
+                        **self.manifest["workers"][0],
+                        "id": "fixer",
+                        "role": "fixer",
+                        "mutation": "allowed",
+                        "findings": [
+                            {
+                                "severity": "high",
+                                "title": "Hidden lease deadlocks headless launch",
+                                "evidence": "SyncOutcome retains a non-reentrant lease.",
+                            },
+                            "plain string finding",
+                        ],
+                    }.items()
+                    if key != "launch"
+                }
+            ],
+        }
+        _, _, prompts = helper.validate_manifest(manifest)
+        self.assertIn(
+            "- [high] Hidden lease deadlocks headless launch", prompts[0]
+        )
+        self.assertIn("  SyncOutcome retains a non-reentrant lease.", prompts[0])
+        self.assertIn("- plain string finding", prompts[0])
+        self.assertNotIn('"severity"', prompts[0].split("REPORT")[0])
+
     def test_prompt_feedback_validates_in_delivered_reports(self) -> None:
         good = valid_report(
             promptFeedback=[
