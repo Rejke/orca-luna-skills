@@ -17,8 +17,7 @@ Sol (the controller) makes the decisions: how to split the work, what each worke
 does, and the final verdict. The helper script `scripts/orca_luna_worker.py` does the
 repeatable steps. The helper spawns each worker itself in a plain Orca terminal —
 there is no orchestration layer, no injected preamble, and no mail. Workers read
-their prompt from a file and write their report to a file; only short one-line
-commands ever cross the Windows PowerShell bridge.
+their prompt from a file and write their report to a file.
 
 ## Rules
 
@@ -52,7 +51,7 @@ commands ever cross the Windows PowerShell bridge.
 - Preflight copies the helper into `<receipts>/runtime/helper.py` and stores its
   SHA-256 in the journal. Every later command for that wave (collect, answer, notify,
   stop, resume, finalize) runs that copy; the worker's wake command already points to
-  it. So a skill upgrade cannot break a running wave. The live helper refuses a wave
+  it. The live helper refuses a wave
   from a different build and prints the path of the copy.
 
 ## Choose mode and swarm size
@@ -101,16 +100,13 @@ touches Orca.
 
 Optional `envelope.knownFailureModes`: up to 6 learned rules (240 characters each,
 1000 total). Get them from the feedback skill's `rules` command. The renderer adds
-them to every worker prompt as a KNOWN FAILURE MODES section. Rules travel through
-the manifest, so a prompt can always be rebuilt from the manifest alone.
+them to every worker prompt as a KNOWN FAILURE MODES section.
 
 Keep the manifest lean. The rendered prompt already carries the role charter, the
 report contract, the verdict rules, and the learning arrays — do not restate any of
-them in acceptance criteria, constraints, or checks. A paraphrase drifts and
-becomes a second, conflicting contract. One acceptance criterion is one testable
+them in acceptance criteria, constraints, or checks. One acceptance criterion is one testable
 statement, not a paragraph. To protect earlier work, write one line — "Preserve
-all behavior accepted at <reviewedAnchor>" — instead of listing past wins; that
-list grows every wave and never shrinks. FINDINGS is the canonical list: refer to
+all behavior accepted at <reviewedAnchor>" — instead of listing past wins. FINDINGS is the canonical list: refer to
 findings by number in acceptance criteria and checks ("AC1: finding 1 is
 root-cause fixed with a production-entrypoint regression test"); do not retell a
 finding's content there, and do not repeat the owned file list outside SCOPE and
@@ -133,13 +129,12 @@ uv run --no-project <skill>/scripts/orca_luna_worker.py prompt \
 Roles are `scout`, `implementer`, `integrator`, `reviewer`, `antislop`, and `fixer`.
 The optional `launch` field picks a spec from the Launch policy; review roles reject
 overrides. In a review wave, give every commit range between the reviewed diff and
-`baseAnchor` to a named reviewer. A range with no owner is a hole in coverage: a
-later commit can break what an earlier commit fixed. Use `displayName` for a short
+`baseAnchor` to a named reviewer. Use `displayName` for a short
 tab title; otherwise the helper builds one from the worktree `name` or the goal, with
 index and role in front.
 
-The helper renders a full built-in charter for every reviewer and anti-slop worker
-(adapted from 1F47E/rival): defect focus areas, generated-code checks, and the
+The helper renders a full built-in charter for every reviewer and anti-slop worker:
+defect focus areas, generated-code checks, and the
 seven anti-slop angles. The manifest adds only lens, scope, and criteria — do not
 copy charter text into the manifest.
 
@@ -184,8 +179,7 @@ For each worker the helper: creates the worktree when the manifest asks for one
 agent with the exact spawn command (`terminal create --command`); waits for the
 agent to reach idle; captures the boot banner as launch evidence; writes the full
 prompt to `prompts/<worker>.txt`; and sends the terminal one short line — "Read the
-file <path> and do exactly what it says." The prompt itself never crosses the
-PowerShell bridge. `receipt-dir` is the only journal and the only resume handle:
+file <path> and do exactly what it says." `receipt-dir` is the only journal and the only resume handle:
 
 ```text
 preflight.json
@@ -237,8 +231,7 @@ wake. Never run collect again just because nothing arrived.
 ## Questions: blocked workers stay warm
 
 A worker that truly needs a decision writes a report with `taskStatus: "blocked"`
-and a one-sentence `question` field, pings, and stays idle in its terminal. Its
-session and context survive. Write your answer to a file with the Write tool, then:
+and a one-sentence `question` field, pings, and stays idle in its terminal. Write your answer to a file with the Write tool, then:
 
 ```text
 uv run --no-project <skill>/scripts/orca_luna_worker.py answer \
@@ -246,9 +239,9 @@ uv run --no-project <skill>/scripts/orca_luna_worker.py answer \
 ```
 
 The helper sends the worker one short line pointing at the answer file. The worker
-continues the same task with full context — no fresh session, no lost work — and
-writes its final report, which replaces the blocked one. Workers have no other
-question channel; there is no ask and no mail.
+continues the same task and writes its final report, which replaces the blocked
+one. Workers have no other
+question channel.
 
 ## Finalize before Sol's verdict
 

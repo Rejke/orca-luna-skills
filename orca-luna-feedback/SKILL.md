@@ -27,8 +27,7 @@ journal, delete it instead of archiving it.
 - Keep two judgments apart: did the orchestration work, and is the code good. A
   healthy swarm with a `FAIL` review is mechanics PASS and content FAIL.
 - Per worker: one keep and one change, tied to that worker's report. If there is
-  nothing concrete to say, delete the section. Praise without an action item is
-  noise.
+  nothing concrete to say, delete the section.
 - Every next-wave suggestion must be a change someone can make in the next manifest:
   a shard boundary, AC wording, launch choice, repair budget, or worktree layout.
   "Communicate better" is not a change.
@@ -55,7 +54,7 @@ with your findings, based on `final.json` and `reports/`. Delete optional sectio
 that have nothing concrete.
 
 Archive the note. This fails while any placeholder remains, then copies the note into
-this skill's `log/`, because receipt directories in `/tmp` do not survive:
+this skill's `log/`:
 
 ```text
 uv run --no-project <skill>/scripts/feedback.py archive \
@@ -75,7 +74,7 @@ uv run --no-project <skill>/scripts/feedback.py log --tail 5
 - A critical or high rule activates after one confirmation. A medium or low rule
   activates after two waves with different Run IDs.
 - Entries whose `gap` is not `prompt` are counted per gap kind, not turned into
-  rules. Not every mistake is fixed by a prompt.
+  rules.
 - The same failure class merges into one rule. The registry keeps severity,
   scopes, counts, sources, and first/last seen.
 - At most 24 rules can be active. When the cap blocks an activation, retire
