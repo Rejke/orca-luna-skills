@@ -1815,7 +1815,11 @@ def read_codex_session(path: Path) -> dict[str, Any]:
                     settings = (
                         payload.get("collaboration_mode") or {}
                     ).get("settings") or {}
-                    effort = settings.get("reasoning_effort") or effort
+                    effort = (
+                        settings.get("reasoning_effort")
+                        or payload.get("effort")
+                        or effort
+                    )
                 elif kind == "event_msg" and payload.get("type") == "token_count":
                     info = payload.get("info") or {}
                     totals = info.get("total_token_usage") or totals
