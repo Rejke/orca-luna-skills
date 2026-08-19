@@ -156,7 +156,11 @@ ROLE_RULES = {
         "coherent diff. Reuse existing mechanisms, keep failures explicit, avoid speculative "
         "abstractions/compatibility, and run the required checks. Preserve unrelated changes. "
         "When your code must match an existing module's behavior, call that module in your "
-        "tests as the oracle; never assert your implementation against itself."
+        "tests as the oracle; never assert your implementation against itself. "
+        "Before you report, reread the actual diff, not your memory of it. For each changed "
+        "behavior, construct one concrete counterexample — a different valid input, call "
+        "sequence, concurrent call, failure path, or caller — and fix what breaks. Do not "
+        "say the diff looks fine; name the counterexample you tried."
     ),
     "integrator": (
         "Be the only writer in the integration worktree. Inspect and integrate each declared "
@@ -230,7 +234,9 @@ ROLE_RULES = {
         "the smallest diff, preserve unrelated changes, and rerun relevant checks. Do not "
         "weaken tests/types/lint or add fallback behavior to hide failures. When a "
         "regression test guards behavior that must match an existing module, call that "
-        "module in the test as the oracle."
+        "module in the test as the oracle. Before you report, reread the actual fix diff "
+        "and construct one concrete counterexample against each changed behavior — a fix "
+        "is fresh code. Do not say the diff looks fine; name the counterexample you tried."
     ),
     # Adapted from 1F47E/rival PlanReviewPrompt and AntislopPlanPrompt.
     "planreviewer": (
