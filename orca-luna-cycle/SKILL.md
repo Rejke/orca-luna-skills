@@ -419,12 +419,4 @@ next to it; low findings alone never block. Do not add findings absent from the
 reports.
 
 After the verdict, if the user wants a retro or the wave taught something, write and
-archive feedback with the `orca-luna-feedback` skill. Read its log first when you
-change this skill.
-
-After changing this skill, run:
-
-```text
-uv run --no-project <skill>/scripts/orca_luna_worker.py self-test
-uv run --no-project <skill>/tests/test_helper.py
-```
+archive feedback with the `orca-luna-feedback` skill.

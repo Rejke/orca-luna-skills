@@ -99,9 +99,3 @@ A rule must be one instruction a worker can follow and a reviewer can check.
   required inventory.
 - Show a production call site; a test-only function proves nothing.
 - Join every spawn_blocking task before the lease is released or returned.
-
-After changing this skill, run:
-
-```text
-uv run --no-project <skill>/scripts/feedback.py self-test
-```
