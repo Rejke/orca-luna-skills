@@ -292,13 +292,12 @@ def scaffold_text(directory: Path) -> str:
         "",
         "## Verdict",
         "",
-        "<fill: one actionable sentence — the outcome and the single most"
-        " important next step>",
+        "<fill: one sentence — the outcome and the most important next step>",
         "",
         "## Mechanics vs content",
         "",
-        "<fill: what the mechanics/content split above means for this wave,"
-        " citing final.json checks and the deciding report fields>",
+        "<fill: two judgments — did the orchestration work, and is the code good."
+        " Cite final.json checks and the deciding report fields>",
         "",
         "## Per-worker",
         "",
@@ -320,15 +319,15 @@ def scaffold_text(directory: Path) -> str:
     lines += [
         "## Subagent prompts",
         "",
-        "<fill: judge the rendered worker prompts in prompts/ — did goal, scope,"
-        " AC wording, context, and findings framing set each worker up or mislead"
-        " it; changes must be prompt-executable (reword goal, tighten scope, add"
-        " context or lens), citing prompts/<worker>.txt — or 'None.'>",
+        "<fill: for each rendered prompt in prompts/, say which goal, scope, AC,"
+        " or context wording helped the worker and which misled it. Each change"
+        " must be a concrete rewording or scope cut, cited against"
+        " prompts/<worker>.txt — or 'None.'>",
         "",
         "## Next-wave manifest adjustments",
         "",
-        "<fill: manifest-executable deltas — shard boundaries, AC wording,"
-        " launch choice, repair budget, worktree layout — or 'None.'>",
+        "<fill: changes someone can make in the next manifest — shard boundaries,"
+        " AC wording, launch choice, repair budget, worktree layout — or 'None.'>",
         "",
         "## Skill gaps",
         "",

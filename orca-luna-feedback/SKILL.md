@@ -33,7 +33,7 @@ journal, delete it instead of archiving it.
   suggestion must be a concrete rewording or scope cut, cited against
   `prompts/<worker>.txt`.
 - Skill problems go into their own section; they feed orca-luna-cycle maintenance.
-  List contract friction, helper errors, and rules that got in the way of the task —
+  List contract friction, helper errors, and rules that blocked or slowed the task —
   each with the exact receipt path.
 - Use only numbers the journal holds (workers, verdicts, findings by severity,
   repair rounds). Never invent a number.
@@ -67,7 +67,7 @@ uv run --no-project <skill>/scripts/feedback.py log --tail 5
 
 ## Learned rules
 
-`archive` also folds each report's `promptFeedback` into `log/patterns.json`:
+`archive` also merges each report's `promptFeedback` into `log/patterns.json`:
 
 - A critical or high rule activates after one confirmation. A medium or low rule
   activates after two waves with different Run IDs.
@@ -75,8 +75,8 @@ uv run --no-project <skill>/scripts/feedback.py log --tail 5
   rules.
 - The same failure class merges into one rule. The registry keeps severity,
   scopes, counts, sources, and first/last seen.
-- At most 24 rules can be active. When the cap blocks an activation, retire
-  something first.
+- At most 24 rules can be active. When the cap blocks an activation, retire a
+  rule first.
 
 Pick rules for the next wave manifest:
 
