@@ -630,6 +630,7 @@ class PlanReviewManifestTests(unittest.TestCase):
                     Namespace(
                         plan=str(plan),
                         prior=[str(prior)],
+                        prior_plan=None,
                         hint=["check the migration mapping"],
                         worker_id="plan_reviewer",
                     )
@@ -662,13 +663,81 @@ class PlanReviewManifestTests(unittest.TestCase):
             with patch("builtins.print", side_effect=lambda *a, **k: printed.append(a[0])):
                 helper.command_plan_review_manifest(
                     Namespace(
-                        plan=str(plan), prior=None, hint=None, worker_id="plan_reviewer"
+                        plan=str(plan),
+                        prior=None,
+                        prior_plan=None,
+                        hint=None,
+                        worker_id="plan_reviewer",
                     )
                 )
             manifest = json.loads(printed[0])
             self.assertEqual(
                 list(manifest["envelope"]["acceptanceCriteria"]), ["AC1"]
             )
+
+    def test_prior_plan_requires_prior_report_and_lands_in_scope(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="orca-luna-planrev-") as name:
+            plan = Path(name) / "plan.md"
+            plan.write_text("# Plan v2\n", encoding="utf-8")
+            old_plan = Path(name) / "old-plan.md"
+            old_plan.write_text("# Plan v1\n", encoding="utf-8")
+            prior = Path(name) / "prior.json"
+            prior.write_text("{}", encoding="utf-8")
+            with self.assertRaises(helper.HelperError):
+                helper.command_plan_review_manifest(
+                    Namespace(
+                        plan=str(plan),
+                        prior=None,
+                        prior_plan=[str(old_plan)],
+                        hint=None,
+                        worker_id="plan_reviewer",
+                    )
+                )
+            printed: list[str] = []
+            with patch("builtins.print", side_effect=lambda *a, **k: printed.append(a[0])):
+                helper.command_plan_review_manifest(
+                    Namespace(
+                        plan=str(plan),
+                        prior=[str(prior)],
+                        prior_plan=[str(old_plan)],
+                        hint=None,
+                        worker_id="plan_reviewer",
+                    )
+                )
+            manifest = json.loads(printed[0])
+            scope = manifest["workers"][0]["scope"]
+            self.assertEqual(
+                scope,
+                [
+                    str(plan.resolve()),
+                    str(old_plan.resolve()),
+                    str(prior.resolve()),
+                ],
+            )
+            self.assertIn("sha256", manifest["objective"])
+
+    def test_snapshot_copies_only_external_scope_files(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="orca-luna-snap-") as name:
+            root = Path(name)
+            repo = root / "repo"
+            (repo / "src").mkdir(parents=True)
+            repo_file = repo / "src" / "main.ts"
+            repo_file.write_text("code", encoding="utf-8")
+            external = root / "plan.md"
+            external.write_text("# Plan\n", encoding="utf-8")
+            receipts = root / "receipts"
+            receipts.mkdir()
+            workers = [
+                {"scope": [str(external), str(repo_file), "packages/x.ts", 7]}
+            ]
+            copies = helper.snapshot_external_scope(
+                receipts, workers, repo_root=repo
+            )
+            self.assertEqual(list(copies), [str(external)])
+            copied = Path(copies[str(external)])
+            self.assertTrue(copied.is_file())
+            self.assertEqual(copied.read_text(encoding="utf-8"), "# Plan\n")
+            self.assertTrue(copied.name.endswith("-plan.md"))
 
 
 class UsageTests(unittest.TestCase):

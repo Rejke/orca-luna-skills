@@ -273,7 +273,9 @@ ROLE_RULES = {
         "the materials omit is a finding, not out of bounds. "
         "When prior review reports are in scope, check each prior finding: "
         "closed at its root cause, or still open — an unaddressed prior "
-        "finding is a finding. "
+        "finding is a finding. When a prior plan version is in scope, check "
+        "the delta too: a revision that silently drops a commitment or "
+        "narrows a criterion is a finding. "
         "Report only issues you are confident are real; no wording nitpicks. "
         "Every finding cites the exact criterion or section. Do not ask the "
         "controller what the plan means: an ambiguity you would ask about is "
@@ -1473,6 +1475,38 @@ def preflight_manifest(
     }
 
 
+def snapshot_external_scope(
+    directory: Path, workers: list[dict[str, Any]], repo_root: Path | None = None
+) -> dict[str, str]:
+    """Copy out-of-repo scope files into receipts.
+
+    Plans and reports in /tmp mutate between waves; the receipt copy is the
+    version this wave actually reviewed, so later citations resolve.
+    """
+    root = (repo_root or Path.cwd()).resolve()
+    copies: dict[str, str] = {}
+    target_dir = directory / "scope"
+    for worker in workers:
+        for entry in worker.get("scope") or []:
+            if not isinstance(entry, str) or not entry.startswith("/"):
+                continue
+            source = Path(entry)
+            try:
+                if not source.is_file() or source.resolve().is_relative_to(root):
+                    continue
+            except OSError:
+                continue
+            if str(source) in copies:
+                continue
+            digest = hashlib.sha256(source.read_bytes()).hexdigest()
+            target_dir.mkdir(parents=True, exist_ok=True)
+            target = target_dir / f"{digest[:12]}-{source.name}"
+            if not target.exists():
+                shutil.copy2(source, target)
+            copies[str(source)] = str(target)
+    return copies
+
+
 def command_preflight(args: argparse.Namespace) -> int:
     manifest, workers, prompts = validate_manifest(load_json(args.manifest))
     directory = receipt_dir(args.receipt_dir)
@@ -1506,6 +1540,7 @@ def command_preflight(args: argparse.Namespace) -> int:
     )
     if not anchor_ok:
         receipt["status"] = "failed"
+    receipt["scopeSnapshot"] = snapshot_external_scope(directory, workers)
     receipt["helper"] = {"sha256": helper_digest(), "archived": str(archived)}
     receipt["workers"] = [
         {
@@ -1666,6 +1701,14 @@ def command_plan_review_manifest(args: argparse.Namespace) -> int:
     for prior in priors:
         if not Path(prior).is_file():
             raise HelperError(f"prior report not found: {prior}")
+    prior_plans = [
+        str(Path(prior_plan).resolve()) for prior_plan in args.prior_plan or []
+    ]
+    for prior_plan in prior_plans:
+        if not Path(prior_plan).is_file():
+            raise HelperError(f"prior plan version not found: {prior_plan}")
+    if prior_plans and not priors:
+        raise HelperError("--prior-plan requires the matching --prior report")
     criteria = {"AC1": PLAN_REVIEW_AC_EXECUTABLE}
     if priors:
         criteria["AC2"] = PLAN_REVIEW_AC_PRIORS
@@ -1675,15 +1718,18 @@ def command_plan_review_manifest(args: argparse.Namespace) -> int:
         "displayName": "plan review",
         "goal": "Apply the plan-review charter to the plan file in scope.",
         "criteria": list(criteria),
-        "scope": [str(plan), *priors],
+        "scope": [str(plan), *prior_plans, *priors],
         "launch": "sol-xhigh",
     }
     if args.hint:
         worker["context"] = "Hints, not acceptance: " + "; ".join(args.hint)
+    digest = hashlib.sha256(plan.read_bytes()).hexdigest()
     manifest = {
         "schemaVersion": 2,
         "mode": "audit",
-        "objective": f"Independent review of the plan {plan.name}.",
+        "objective": (
+            f"Independent review of the plan {plan.name} (sha256 {digest[:12]})."
+        ),
         "envelope": {
             "goal": PLAN_REVIEW_MISSION,
             "acceptanceCriteria": criteria,
@@ -3828,6 +3874,12 @@ def parser() -> argparse.ArgumentParser:
         "--prior",
         action="append",
         help="prior review report to re-check; repeatable",
+    )
+    plan_review.add_argument(
+        "--prior-plan",
+        action="append",
+        help="the plan version the prior report reviewed (from that wave's "
+        "receipts scope/); repeatable",
     )
     plan_review.add_argument(
         "--hint",

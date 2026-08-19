@@ -135,8 +135,9 @@ plan-review worker: defect focus areas, generated-code checks, the seven anti-sl
 angles, and the plan categories. The manifest adds only lens, scope, and criteria
 — do not copy charter text into the manifest.
 
-Before dispatching mutators on a new or complex envelope, run one audit wave
-first. Print the authored plan with `plan-brief --manifest <wave>.json` into a
+Run a plan review before every implementation wave whose envelope is new or
+changed. Before a fixer wave, reviewing the repair plan is the controller's
+call. Print the authored plan with `plan-brief --manifest <wave>.json` into a
 file, then generate the review wave — do not author it. Reviewer conduct lives
 in the charter; the generated ACs state only what must be true of the artifact
 (the plan is executable; a revision closes prior findings). The controller
@@ -148,8 +149,20 @@ uv run --no-project <skill>/scripts/orca_luna_worker.py plan-review-manifest \
 ```
 
 A `--hint` goes into worker context: it widens the reviewer's search and never
-defines acceptance. Fix the plan from the findings, then dispatch. Skip this for
-small waves with proven criteria.
+defines acceptance. Fix the plan from the findings, then dispatch.
+
+Preflight copies every scope file that lives outside the repository into the
+wave's `scope/` receipts, so the reviewed version survives later edits of the
+`/tmp` original. For a re-review after plan fixes, hand the reviewer all three
+artifacts — the revised plan, the prior report, and the plan version that
+report reviewed:
+
+```text
+uv run --no-project <skill>/scripts/orca_luna_worker.py plan-review-manifest \
+  --plan /tmp/<plan>.md \
+  --prior /tmp/<prior-wave>-receipts/reports/<worker>.json \
+  --prior-plan /tmp/<prior-wave>-receipts/scope/<sha>-<plan>.md > /tmp/<wave>.json
+```
 
 Print the JSON Schema and a valid example; do not read the helper source:
 
