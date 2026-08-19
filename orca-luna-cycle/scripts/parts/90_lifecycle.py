@@ -17,7 +17,7 @@ def reconcile_stop_wave(directory: Path) -> dict[str, Any]:
                 directory,
                 index,
                 start_status="cancelled"
-                if record.get("start_status") == "pending"
+                if record.get("start_status") in {"pending", "waiting"}
                 else record.get("start_status"),
                 stop_status="not_created",
             )
@@ -121,7 +121,10 @@ def initialize_wave_state(
                     "terminal_handle": None,
                     "spawn_command": None,
                     "banner_proof": None,
-                    "start_status": "pending",
+                    "depends_on": worker.get("dependsOn") or [],
+                    "start_status": "waiting"
+                    if worker.get("dependsOn")
+                    else "pending",
                     "report_sha": None,
                     "report_status": "pending",
                     "task_status": None,

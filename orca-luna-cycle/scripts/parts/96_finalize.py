@@ -224,3 +224,93 @@ def command_finalize_wave(args: argparse.Namespace) -> int:
     return 0 if mechanical_ok else 2
 
 
+
+def run_git(arguments: list[str], cwd: str | None = None) -> tuple[int, str]:
+    try:
+        completed = subprocess.run(
+            ["git", *arguments],
+            text=True,
+            capture_output=True,
+            check=False,
+            cwd=cwd,
+        )
+    except OSError as exc:
+        return 1, str(exc)
+    return completed.returncode, (completed.stdout or completed.stderr).strip()
+
+
+def worktree_removal_blockers(path: str) -> list[str]:
+    """Why this worktree cannot be removed without --force; empty means safe."""
+    blockers: list[str] = []
+    status_code, status_output = run_git(["status", "--short"], cwd=path)
+    if status_code != 0:
+        return [f"git status failed: {status_output}"]
+    if status_output:
+        blockers.append("uncommitted or untracked changes")
+    tip_code, tip = run_git(["rev-parse", "HEAD"], cwd=path)
+    if tip_code != 0:
+        return [*blockers, f"git rev-parse failed: {tip}"]
+    merged_code, _ = run_git(["merge-base", "--is-ancestor", tip, "HEAD"])
+    if merged_code != 0:
+        blockers.append("HEAD is not an ancestor of the current worktree HEAD")
+    return blockers
+
+
+def command_cleanup_worktrees(args: argparse.Namespace) -> int:
+    """Remove this wave's created worktrees once their commits are integrated."""
+    directory = receipt_dir(args.receipt_dir)
+    state = read_wave_state(directory, allow_foreign=True)
+    rows: list[dict[str, Any]] = []
+    for record in state.get("workers", []):
+        worktree_id = record.get("worktree_id")
+        if not worktree_id:
+            continue
+        row: dict[str, Any] = {
+            "workerId": record.get("worker_id"),
+            "worktreeId": worktree_id,
+        }
+        path = worktree_id_path(worktree_id)
+        blockers = worktree_removal_blockers(path) if path else ["unknown path"]
+        if blockers and not args.force:
+            row.update(status="kept", blockers=blockers)
+            rows.append(row)
+            continue
+        returncode, receipt, detail = call_orca(
+            [
+                "worktree",
+                "rm",
+                "--worktree",
+                f"id:{worktree_id}",
+                *(["--force"] if args.force else []),
+                "--json",
+            ]
+        )
+        save_json(
+            directory / "runtime" / f"worktree-rm-{record.get('worker_id')}.json",
+            receipt
+            if receipt is not None
+            else {"returncode": returncode, "detail": detail},
+        )
+        if returncode == 0:
+            row["status"] = "removed"
+        else:
+            row.update(status="rm_failed", error=detail)
+        rows.append(row)
+    kept = [row for row in rows if row.get("status") == "kept"]
+    print(
+        compact_json(
+            {
+                "status": "ok" if not kept else "kept_some",
+                "worktrees": rows,
+                **(
+                    {
+                        "next": "integrate or discard the kept worktrees, then "
+                        "rerun; --force removes them with their changes"
+                    }
+                    if kept
+                    else {}
+                ),
+            }
+        )
+    )
+    return 0

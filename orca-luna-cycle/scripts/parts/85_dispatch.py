@@ -64,6 +64,40 @@ def spawn_pending_workers(directory: Path, workers: list[dict[str, Any]]) -> Non
         record = read_wave_state(directory)["workers"][index - 1]
         if record.get("terminal_handle"):
             continue
+        if record.get("start_status") == "waiting":
+            # A waiting worker spawns only after every dependency settled with
+            # a valid done report; a failed dependency cascades instead.
+            by_id = {
+                sibling["worker_id"]: sibling
+                for sibling in read_wave_state(directory)["workers"]
+            }
+            dependencies = record.get("depends_on") or []
+            failed = [
+                dependency
+                for dependency in dependencies
+                if by_id[dependency].get("task_status") == "failed"
+                or by_id[dependency].get("start_status") == "dep_failed"
+            ]
+            if failed:
+                update_worker_state(
+                    directory,
+                    index,
+                    start_status="dep_failed",
+                    task_status="failed",
+                    stop_status="not_created",
+                    error="dependency failed: " + ", ".join(failed),
+                )
+                continue
+            if not all(
+                by_id[dependency].get("task_status") == "done"
+                and by_id[dependency].get("report_status") == "valid"
+                for dependency in dependencies
+            ):
+                continue
+            update_worker_state(directory, index, start_status="pending")
+            record = read_wave_state(directory)["workers"][index - 1]
+        if record.get("start_status") in {"dep_failed", "cancelled"}:
+            continue
         if record.get("start_status") != "pending":
             raise HelperError(
                 f"worker {index} is {record.get('start_status')}; "

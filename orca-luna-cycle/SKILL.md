@@ -27,11 +27,16 @@ their prompt from a file and write their report to a file.
 - Workers never start other workers, never load this skill, never widen their own
   scope, and never decide the final verdict.
 - Workers that change files in parallel must own separate files and separate Orca
-  worktrees. Read-only workers may share `current`, but they must not build, format,
-  install, write caches, or change files or services.
+  worktrees. Mutators may share one worktree only when `dependsOn` orders them:
+  a dependent worker spawns after every dependency settled with a valid `done`
+  report, so the sharers never run at once. Read-only workers may share
+  `current`, but they must not build, format, install, write caches, or change
+  files or services.
 - Worktree rules: a wave with one mutator works in `current` by default. A mutator in
   a new worktree needs an integrator in the same wave; the helper rejects the manifest
-  otherwise. After the Sol gate, merge each wave worktree exactly once and delete it.
+  otherwise. After the Sol gate, merge each wave worktree exactly once, then run
+  `cleanup-worktrees --receipt-dir <receipts>`: it removes the wave's created
+  worktrees and keeps any that are dirty or unmerged (`--force` overrides).
   A leftover worktree is a bug. `finalize-wave` lists them in
   `final.json#createdWorktrees`.
 - Keep the user's files as they are. Never reset, clean, stash, discard, push,
@@ -118,6 +123,14 @@ instead of handing one worker a subsystem. The integrator's `criteria` lists its
 own contract only: composition, disjoint consumption, cross-shard checks. Never
 assign producer ACs to the integrator — a producer's failure is repaired in a
 producer wave, not judged twice.
+
+The worker field `dependsOn` lists worker IDs that must settle with a valid
+`done` report before this worker spawns; a failed dependency cancels the
+dependent worker instead. Use it to run sequential mutators in one worktree
+(implement, then fix, then review — no integrator needed) and to hold an
+integrator until every producer report is valid. Dependents spawn during the
+`collect-reports` that satisfies their last dependency. Reserve the integrator
+for waves whose shards must run in parallel across separate worktrees.
 
 Create the manifest and the receipt directory outside the repository. Put shared
 facts once into `envelope`: goal, non-goals, `AC<number>` definitions, constraints,

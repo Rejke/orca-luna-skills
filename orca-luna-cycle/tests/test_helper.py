@@ -707,6 +707,163 @@ class WorkerFailureModeTests(unittest.TestCase):
             helper.validate_manifest(manifest)
 
 
+class DependsOnTests(unittest.TestCase):
+    def manifest(self, workers: list[dict]) -> dict:
+        return {
+            "schemaVersion": 2,
+            "mode": "implementation",
+            "objective": "Depends-on validation.",
+            "envelope": {
+                "goal": "A user sees the probe finish.",
+                "acceptanceCriteria": {"AC1": "probe has a deadline."},
+                "reviewedAnchor": "abc123",
+                "baseAnchor": "abc123",
+                "repairBudget": 1,
+            },
+            "defaults": {"worktree": "current"},
+            "workers": workers,
+        }
+
+    def worker(self, wid: str, role: str = "implementer", **extra) -> dict:
+        mutation = "allowed" if role in {"implementer", "fixer"} else "forbidden"
+        return {
+            "id": wid,
+            "role": role,
+            "goal": f"{wid} goal",
+            "criteria": ["AC1"],
+            "scope": ["src/a.ts"],
+            "mutation": mutation,
+            **extra,
+        }
+
+    def test_sequenced_mutators_may_share_current(self) -> None:
+        manifest = self.manifest(
+            [
+                self.worker("impl"),
+                self.worker("fix", role="fixer", dependsOn=["impl"]),
+            ]
+        )
+        _, workers, _ = helper.validate_manifest(manifest)
+        self.assertEqual(workers[1]["dependsOn"], ["impl"])
+
+    def test_parallel_shared_mutators_are_rejected(self) -> None:
+        manifest = self.manifest(
+            [self.worker("a"), self.worker("b")]
+        )
+        with self.assertRaises(helper.HelperError) as ctx:
+            helper.validate_manifest(manifest)
+        self.assertIn("dependsOn ordering", str(ctx.exception))
+
+    def test_unknown_dependency_is_rejected(self) -> None:
+        manifest = self.manifest([self.worker("a", dependsOn=["ghost"])])
+        with self.assertRaises(helper.HelperError):
+            helper.validate_manifest(manifest)
+
+    def test_cycle_is_rejected(self) -> None:
+        manifest = self.manifest(
+            [
+                self.worker("a", dependsOn=["b"]),
+                {**self.worker("b", role="reviewer"), "dependsOn": ["a"]},
+            ]
+        )
+        with self.assertRaises(helper.HelperError) as ctx:
+            helper.validate_manifest(manifest)
+        self.assertIn("cycle", str(ctx.exception))
+
+    def test_dependent_worker_initializes_as_waiting(self) -> None:
+        manifest = self.manifest(
+            [
+                self.worker("impl"),
+                self.worker("fix", role="fixer", dependsOn=["impl"]),
+            ]
+        )
+        normalized, workers, _ = helper.validate_manifest(manifest)
+        with tempfile.TemporaryDirectory(prefix="orca-luna-dep-") as name,              patch.dict(os.environ, {"ORCA_TERMINAL_HANDLE": "term_controller"}):
+            directory = Path(name)
+            helper.ensure_journal(directory)
+            helper.save_json(directory / "manifest.json", normalized)
+            helper.initialize_wave_state(directory, normalized, workers)
+            records = helper.read_wave_state(directory)["workers"]
+            self.assertEqual(records[0]["start_status"], "pending")
+            self.assertEqual(records[1]["start_status"], "waiting")
+            self.assertEqual(records[1]["depends_on"], ["impl"])
+
+    def dependent_wave(self, name: str):
+        manifest = self.manifest(
+            [
+                self.worker("impl"),
+                self.worker("fix", role="fixer", dependsOn=["impl"]),
+            ]
+        )
+        normalized, workers, prompts = helper.validate_manifest(manifest)
+        directory = Path(name)
+        helper.ensure_journal(directory)
+        helper.save_json(directory / "manifest.json", normalized)
+        helper.initialize_wave_state(directory, normalized, workers)
+        helper.write_prompts(directory, workers, prompts)
+        helper.update_worker_state(
+            directory,
+            1,
+            terminal_handle="term_impl",
+            spawn_command=helper.spawn_command(helper.LAUNCH_SPECS["luna-max"]),
+            start_status="running",
+        )
+        return directory
+
+    def test_collect_spawns_the_dependent_after_a_done_report(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="orca-luna-dep-") as name,              patch.dict(os.environ, {"ORCA_TERMINAL_HANDLE": "term_controller"}):
+            directory = self.dependent_wave(name)
+            report_path = helper.worker_report_path(directory, "impl")
+            report_path.parent.mkdir(parents=True, exist_ok=True)
+            report_path.write_text(
+                json.dumps(valid_report(commit=None, shards=None)), encoding="utf-8"
+            )
+
+            def fake(arguments):
+                command = arguments[1]
+                if command == "create":
+                    return (
+                        0,
+                        {"result": {"terminal": {"handle": "term_fix"}}},
+                        "",
+                    )
+                if command == "read":
+                    return (0, {"result": {"text": "gpt-5.6-luna banner"}}, "")
+                return (0, {"ok": True}, "")
+
+            with patch.object(helper, "call_orca", side_effect=fake),                  patch("builtins.print"):
+                helper.command_collect_reports(
+                    Namespace(receipt_dir=str(directory))
+                )
+            records = helper.read_wave_state(directory)["workers"]
+            self.assertEqual(records[1]["terminal_handle"], "term_fix")
+            self.assertEqual(records[1]["start_status"], "running")
+
+    def test_failed_dependency_cascades(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="orca-luna-dep-") as name,              patch.dict(os.environ, {"ORCA_TERMINAL_HANDLE": "term_controller"}):
+            directory = self.dependent_wave(name)
+            report_path = helper.worker_report_path(directory, "impl")
+            report_path.parent.mkdir(parents=True, exist_ok=True)
+            report_path.write_text(
+                json.dumps(
+                    valid_report(taskStatus="failed", commit=None, shards=None)
+                ),
+                encoding="utf-8",
+            )
+            with patch.object(
+                helper, "call_orca", return_value=(0, {"ok": True}, "")
+            ), patch("builtins.print"):
+                helper.command_collect_reports(
+                    Namespace(receipt_dir=str(directory))
+                )
+            records = helper.read_wave_state(directory)["workers"]
+            self.assertEqual(records[1]["start_status"], "dep_failed")
+            self.assertEqual(records[1]["task_status"], "failed")
+            self.assertTrue(
+                helper.wave_settled(helper.read_wave_state(directory))
+            )
+
+
 class BundleTests(unittest.TestCase):
     def test_bundle_matches_parts(self) -> None:
         scripts = HELPER_PATH.parent

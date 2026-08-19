@@ -117,7 +117,7 @@ def validate_manifest(
     manifest_workers: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
     seen_worktree_names: set[str] = set()
-    mutator_locations: set[str] = set()
+    mutator_locations: dict[str, list[str]] = {}
     for index, raw_worker in enumerate(workers, start=1):
         worker = require_object(raw_worker, f"workers[{index}]", WORKER_FIELDS)
         worker_id = require_string(worker.get("id"), f"workers[{index}].id")
@@ -181,11 +181,7 @@ def validate_manifest(
         if role in MUTATOR_ROLES and mutation != "allowed":
             raise HelperError(f"mutator role {role} requires mutation=allowed")
         if role in MUTATOR_ROLES and worktree not in {"new-child", "new-top-level"}:
-            if worktree in mutator_locations:
-                raise HelperError(
-                    f"parallel mutators cannot share worktree selector {worktree!r}"
-                )
-            mutator_locations.add(worktree)
+            mutator_locations.setdefault(worktree, []).append(worker_id)
         worker_constraints = string_list(
             worker.get("constraints"), f"workers[{index}].constraints"
         )
@@ -252,6 +248,66 @@ def validate_manifest(
             "implementation waves require at least one mutator; "
             "pure review or scout waves must use audit or benchmark mode"
         )
+    worker_ids = {worker["id"] for worker in normalized_workers}
+    dependency_graph: dict[str, list[str]] = {}
+    for position, worker in enumerate(normalized_workers, start=1):
+        depends_on = string_list(
+            worker.get("dependsOn"), f"workers[{position}].dependsOn"
+        )
+        for dependency in depends_on:
+            if dependency not in worker_ids:
+                raise HelperError(
+                    f"workers[{position}].dependsOn references unknown worker "
+                    f"{dependency!r}"
+                )
+            if dependency == worker["id"]:
+                raise HelperError(f"worker {worker['id']!r} cannot depend on itself")
+        if depends_on:
+            worker["dependsOn"] = depends_on
+        else:
+            worker.pop("dependsOn", None)
+        dependency_graph[worker["id"]] = depends_on
+    for start in dependency_graph:
+        trail: list[str] = []
+        seen: set[str] = set()
+
+        def walk_deps(node: str) -> None:
+            if node in trail:
+                raise HelperError(
+                    "dependsOn cycle: " + " -> ".join([*trail, node])
+                )
+            if node in seen:
+                return
+            trail.append(node)
+            for child in dependency_graph.get(node, []):
+                walk_deps(child)
+            trail.pop()
+            seen.add(node)
+
+        walk_deps(start)
+
+    def reaches(source: str, target: str) -> bool:
+        pending, visited = [source], set()
+        while pending:
+            node = pending.pop()
+            if node == target:
+                return True
+            if node in visited:
+                continue
+            visited.add(node)
+            pending.extend(dependency_graph.get(node, []))
+        return False
+
+    for selector, sharers in mutator_locations.items():
+        for first_index in range(len(sharers)):
+            for second_index in range(first_index + 1, len(sharers)):
+                first, second = sharers[first_index], sharers[second_index]
+                if not (reaches(first, second) or reaches(second, first)):
+                    raise HelperError(
+                        f"mutators {first!r} and {second!r} share worktree "
+                        f"{selector!r} without a dependsOn ordering; parallel "
+                        "mutators need separate worktrees"
+                    )
     new_worktree_mutators = [
         worker["id"]
         for worker in normalized_workers

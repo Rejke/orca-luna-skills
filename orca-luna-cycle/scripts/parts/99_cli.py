@@ -121,6 +121,18 @@ def parser() -> argparse.ArgumentParser:
     usage.add_argument("--receipt-dir", required=True)
     usage.set_defaults(func=command_usage)
 
+    cleanup = commands.add_parser(
+        "cleanup-worktrees",
+        help="remove the wave's created worktrees once integrated",
+    )
+    cleanup.add_argument("--receipt-dir", required=True)
+    cleanup.add_argument(
+        "--force",
+        action="store_true",
+        help="remove even dirty or unmerged worktrees",
+    )
+    cleanup.set_defaults(func=command_cleanup_worktrees)
+
     self_test = commands.add_parser(
         "self-test", help="run offline renderer/parser tests"
     )

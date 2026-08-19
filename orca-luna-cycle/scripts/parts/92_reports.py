@@ -264,6 +264,26 @@ def command_collect_reports(args: argparse.Namespace) -> int:
     messages.extend(late_messages)
     actions += late_actions
     latest = read_wave_state(directory)
+    spawned: list[str] = []
+    if not cancel_requested(directory) and any(
+        worker.get("start_status") == "waiting"
+        for worker in latest.get("workers", [])
+    ):
+        _, manifest_workers_config, _ = validate_manifest(
+            load_json(directory / "manifest.json")
+        )
+        handles_before = {
+            worker["worker_id"]: worker.get("terminal_handle")
+            for worker in latest["workers"]
+        }
+        spawn_pending_workers(directory, manifest_workers_config)
+        latest = read_wave_state(directory)
+        spawned = [
+            worker["worker_id"]
+            for worker in latest["workers"]
+            if worker.get("terminal_handle")
+            and not handles_before.get(worker["worker_id"])
+        ]
     settled = wave_settled(latest)
     # Attention comes from durable state, not from message newness: a collect
     # that crashed after journaling must show the same items on replay.
@@ -304,6 +324,7 @@ def command_collect_reports(args: argparse.Namespace) -> int:
                 "status": status,
                 "messages": messages,
                 "attention": attention,
+                **({"spawned": spawned} if spawned else {}),
                 "workers": wave_records(latest),
                 "next": (
                     "run finalize-wave"
@@ -466,8 +487,11 @@ def command_answer(args: argparse.Namespace) -> int:
 def wave_settled(state: dict[str, Any]) -> bool:
     workers = state.get("workers", [])
     return bool(workers) and all(
-        worker.get("task_status") in {"done", "failed"}
-        and worker.get("report_status") == "valid"
+        (
+            worker.get("task_status") in {"done", "failed"}
+            and worker.get("report_status") == "valid"
+        )
+        or worker.get("start_status") == "dep_failed"
         for worker in workers
     )
 

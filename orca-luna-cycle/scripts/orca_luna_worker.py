@@ -78,6 +78,7 @@ REQUIRED_ORCA_COMMANDS = {
     "agent-context": {"json"},
     "worktree current": {"json"},
     "worktree show": {"worktree", "json"},
+    "worktree rm": {"worktree", "force", "json"},
     "worktree create": {"name", "base-branch", "setup", "json"},
     "terminal create": {"worktree", "title", "command", "json"},
     "terminal send": {"terminal", "text", "enter", "json"},
@@ -144,6 +145,7 @@ WORKER_FIELDS = {
     "handoffs",
     "lens",
     "knownFailureModes",
+    "dependsOn",
     "launch",
     "worktree",
     "name",
@@ -699,7 +701,7 @@ def validate_manifest(
     manifest_workers: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
     seen_worktree_names: set[str] = set()
-    mutator_locations: set[str] = set()
+    mutator_locations: dict[str, list[str]] = {}
     for index, raw_worker in enumerate(workers, start=1):
         worker = require_object(raw_worker, f"workers[{index}]", WORKER_FIELDS)
         worker_id = require_string(worker.get("id"), f"workers[{index}].id")
@@ -763,11 +765,7 @@ def validate_manifest(
         if role in MUTATOR_ROLES and mutation != "allowed":
             raise HelperError(f"mutator role {role} requires mutation=allowed")
         if role in MUTATOR_ROLES and worktree not in {"new-child", "new-top-level"}:
-            if worktree in mutator_locations:
-                raise HelperError(
-                    f"parallel mutators cannot share worktree selector {worktree!r}"
-                )
-            mutator_locations.add(worktree)
+            mutator_locations.setdefault(worktree, []).append(worker_id)
         worker_constraints = string_list(
             worker.get("constraints"), f"workers[{index}].constraints"
         )
@@ -834,6 +832,66 @@ def validate_manifest(
             "implementation waves require at least one mutator; "
             "pure review or scout waves must use audit or benchmark mode"
         )
+    worker_ids = {worker["id"] for worker in normalized_workers}
+    dependency_graph: dict[str, list[str]] = {}
+    for position, worker in enumerate(normalized_workers, start=1):
+        depends_on = string_list(
+            worker.get("dependsOn"), f"workers[{position}].dependsOn"
+        )
+        for dependency in depends_on:
+            if dependency not in worker_ids:
+                raise HelperError(
+                    f"workers[{position}].dependsOn references unknown worker "
+                    f"{dependency!r}"
+                )
+            if dependency == worker["id"]:
+                raise HelperError(f"worker {worker['id']!r} cannot depend on itself")
+        if depends_on:
+            worker["dependsOn"] = depends_on
+        else:
+            worker.pop("dependsOn", None)
+        dependency_graph[worker["id"]] = depends_on
+    for start in dependency_graph:
+        trail: list[str] = []
+        seen: set[str] = set()
+
+        def walk_deps(node: str) -> None:
+            if node in trail:
+                raise HelperError(
+                    "dependsOn cycle: " + " -> ".join([*trail, node])
+                )
+            if node in seen:
+                return
+            trail.append(node)
+            for child in dependency_graph.get(node, []):
+                walk_deps(child)
+            trail.pop()
+            seen.add(node)
+
+        walk_deps(start)
+
+    def reaches(source: str, target: str) -> bool:
+        pending, visited = [source], set()
+        while pending:
+            node = pending.pop()
+            if node == target:
+                return True
+            if node in visited:
+                continue
+            visited.add(node)
+            pending.extend(dependency_graph.get(node, []))
+        return False
+
+    for selector, sharers in mutator_locations.items():
+        for first_index in range(len(sharers)):
+            for second_index in range(first_index + 1, len(sharers)):
+                first, second = sharers[first_index], sharers[second_index]
+                if not (reaches(first, second) or reaches(second, first)):
+                    raise HelperError(
+                        f"mutators {first!r} and {second!r} share worktree "
+                        f"{selector!r} without a dependsOn ordering; parallel "
+                        "mutators need separate worktrees"
+                    )
     new_worktree_mutators = [
         worker["id"]
         for worker in normalized_workers
@@ -2310,6 +2368,40 @@ def spawn_pending_workers(directory: Path, workers: list[dict[str, Any]]) -> Non
         record = read_wave_state(directory)["workers"][index - 1]
         if record.get("terminal_handle"):
             continue
+        if record.get("start_status") == "waiting":
+            # A waiting worker spawns only after every dependency settled with
+            # a valid done report; a failed dependency cascades instead.
+            by_id = {
+                sibling["worker_id"]: sibling
+                for sibling in read_wave_state(directory)["workers"]
+            }
+            dependencies = record.get("depends_on") or []
+            failed = [
+                dependency
+                for dependency in dependencies
+                if by_id[dependency].get("task_status") == "failed"
+                or by_id[dependency].get("start_status") == "dep_failed"
+            ]
+            if failed:
+                update_worker_state(
+                    directory,
+                    index,
+                    start_status="dep_failed",
+                    task_status="failed",
+                    stop_status="not_created",
+                    error="dependency failed: " + ", ".join(failed),
+                )
+                continue
+            if not all(
+                by_id[dependency].get("task_status") == "done"
+                and by_id[dependency].get("report_status") == "valid"
+                for dependency in dependencies
+            ):
+                continue
+            update_worker_state(directory, index, start_status="pending")
+            record = read_wave_state(directory)["workers"][index - 1]
+        if record.get("start_status") in {"dep_failed", "cancelled"}:
+            continue
         if record.get("start_status") != "pending":
             raise HelperError(
                 f"worker {index} is {record.get('start_status')}; "
@@ -2512,7 +2604,7 @@ def reconcile_stop_wave(directory: Path) -> dict[str, Any]:
                 directory,
                 index,
                 start_status="cancelled"
-                if record.get("start_status") == "pending"
+                if record.get("start_status") in {"pending", "waiting"}
                 else record.get("start_status"),
                 stop_status="not_created",
             )
@@ -2616,7 +2708,10 @@ def initialize_wave_state(
                     "terminal_handle": None,
                     "spawn_command": None,
                     "banner_proof": None,
-                    "start_status": "pending",
+                    "depends_on": worker.get("dependsOn") or [],
+                    "start_status": "waiting"
+                    if worker.get("dependsOn")
+                    else "pending",
                     "report_sha": None,
                     "report_status": "pending",
                     "task_status": None,
@@ -2987,6 +3082,26 @@ def command_collect_reports(args: argparse.Namespace) -> int:
     messages.extend(late_messages)
     actions += late_actions
     latest = read_wave_state(directory)
+    spawned: list[str] = []
+    if not cancel_requested(directory) and any(
+        worker.get("start_status") == "waiting"
+        for worker in latest.get("workers", [])
+    ):
+        _, manifest_workers_config, _ = validate_manifest(
+            load_json(directory / "manifest.json")
+        )
+        handles_before = {
+            worker["worker_id"]: worker.get("terminal_handle")
+            for worker in latest["workers"]
+        }
+        spawn_pending_workers(directory, manifest_workers_config)
+        latest = read_wave_state(directory)
+        spawned = [
+            worker["worker_id"]
+            for worker in latest["workers"]
+            if worker.get("terminal_handle")
+            and not handles_before.get(worker["worker_id"])
+        ]
     settled = wave_settled(latest)
     # Attention comes from durable state, not from message newness: a collect
     # that crashed after journaling must show the same items on replay.
@@ -3027,6 +3142,7 @@ def command_collect_reports(args: argparse.Namespace) -> int:
                 "status": status,
                 "messages": messages,
                 "attention": attention,
+                **({"spawned": spawned} if spawned else {}),
                 "workers": wave_records(latest),
                 "next": (
                     "run finalize-wave"
@@ -3189,8 +3305,11 @@ def command_answer(args: argparse.Namespace) -> int:
 def wave_settled(state: dict[str, Any]) -> bool:
     workers = state.get("workers", [])
     return bool(workers) and all(
-        worker.get("task_status") in {"done", "failed"}
-        and worker.get("report_status") == "valid"
+        (
+            worker.get("task_status") in {"done", "failed"}
+            and worker.get("report_status") == "valid"
+        )
+        or worker.get("start_status") == "dep_failed"
         for worker in workers
     )
 
@@ -3679,6 +3798,96 @@ def command_finalize_wave(args: argparse.Namespace) -> int:
     return 0 if mechanical_ok else 2
 
 
+
+def run_git(arguments: list[str], cwd: str | None = None) -> tuple[int, str]:
+    try:
+        completed = subprocess.run(
+            ["git", *arguments],
+            text=True,
+            capture_output=True,
+            check=False,
+            cwd=cwd,
+        )
+    except OSError as exc:
+        return 1, str(exc)
+    return completed.returncode, (completed.stdout or completed.stderr).strip()
+
+
+def worktree_removal_blockers(path: str) -> list[str]:
+    """Why this worktree cannot be removed without --force; empty means safe."""
+    blockers: list[str] = []
+    status_code, status_output = run_git(["status", "--short"], cwd=path)
+    if status_code != 0:
+        return [f"git status failed: {status_output}"]
+    if status_output:
+        blockers.append("uncommitted or untracked changes")
+    tip_code, tip = run_git(["rev-parse", "HEAD"], cwd=path)
+    if tip_code != 0:
+        return [*blockers, f"git rev-parse failed: {tip}"]
+    merged_code, _ = run_git(["merge-base", "--is-ancestor", tip, "HEAD"])
+    if merged_code != 0:
+        blockers.append("HEAD is not an ancestor of the current worktree HEAD")
+    return blockers
+
+
+def command_cleanup_worktrees(args: argparse.Namespace) -> int:
+    """Remove this wave's created worktrees once their commits are integrated."""
+    directory = receipt_dir(args.receipt_dir)
+    state = read_wave_state(directory, allow_foreign=True)
+    rows: list[dict[str, Any]] = []
+    for record in state.get("workers", []):
+        worktree_id = record.get("worktree_id")
+        if not worktree_id:
+            continue
+        row: dict[str, Any] = {
+            "workerId": record.get("worker_id"),
+            "worktreeId": worktree_id,
+        }
+        path = worktree_id_path(worktree_id)
+        blockers = worktree_removal_blockers(path) if path else ["unknown path"]
+        if blockers and not args.force:
+            row.update(status="kept", blockers=blockers)
+            rows.append(row)
+            continue
+        returncode, receipt, detail = call_orca(
+            [
+                "worktree",
+                "rm",
+                "--worktree",
+                f"id:{worktree_id}",
+                *(["--force"] if args.force else []),
+                "--json",
+            ]
+        )
+        save_json(
+            directory / "runtime" / f"worktree-rm-{record.get('worker_id')}.json",
+            receipt
+            if receipt is not None
+            else {"returncode": returncode, "detail": detail},
+        )
+        if returncode == 0:
+            row["status"] = "removed"
+        else:
+            row.update(status="rm_failed", error=detail)
+        rows.append(row)
+    kept = [row for row in rows if row.get("status") == "kept"]
+    print(
+        compact_json(
+            {
+                "status": "ok" if not kept else "kept_some",
+                "worktrees": rows,
+                **(
+                    {
+                        "next": "integrate or discard the kept worktrees, then "
+                        "rerun; --force removes them with their changes"
+                    }
+                    if kept
+                    else {}
+                ),
+            }
+        )
+    )
+    return 0
 # ==== part: 98_selftest.py ====
 def command_self_test(_: argparse.Namespace) -> int:
     assert LAUNCH_SPECS["luna-max"] == {
@@ -4128,6 +4337,18 @@ def parser() -> argparse.ArgumentParser:
     )
     usage.add_argument("--receipt-dir", required=True)
     usage.set_defaults(func=command_usage)
+
+    cleanup = commands.add_parser(
+        "cleanup-worktrees",
+        help="remove the wave's created worktrees once integrated",
+    )
+    cleanup.add_argument("--receipt-dir", required=True)
+    cleanup.add_argument(
+        "--force",
+        action="store_true",
+        help="remove even dirty or unmerged worktrees",
+    )
+    cleanup.set_defaults(func=command_cleanup_worktrees)
 
     self_test = commands.add_parser(
         "self-test", help="run offline renderer/parser tests"
