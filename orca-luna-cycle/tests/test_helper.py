@@ -569,6 +569,7 @@ class LaunchPolicyTests(unittest.TestCase):
             helper.spawn_command(helper.LAUNCH_SPECS["sol-xhigh"]),
             "codex --dangerously-bypass-approvals-and-sandbox "
             "-c check_for_update_on_startup=false "
+            "-c features.apps=false "
             "-m gpt-5.6-sol -c model_reasoning_effort=xhigh",
         )
         self.assertEqual(

@@ -70,13 +70,14 @@ def spawn_command(spec: dict[str, Any]) -> str:
 
     No quotes anywhere: the string crosses the Windows PowerShell bridge once,
     and codex parses a bare -c value as a literal string. Agent sandbox,
-    approvals, and the startup update prompt are off: an unattended terminal
-    cannot answer any prompt.
+    approvals, the startup update prompt, and apps are off: an unattended
+    terminal cannot answer any prompt, and a worker never needs a connector.
     """
     if spec["agent"] == "codex":
         command = (
             "codex --dangerously-bypass-approvals-and-sandbox "
             "-c check_for_update_on_startup=false "
+            "-c features.apps=false "
             f"-m {spec['model']} -c model_reasoning_effort={spec['effort']}"
         )
         if spec.get("speedTier") == "fast":
