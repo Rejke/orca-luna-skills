@@ -91,9 +91,19 @@
         "mutation": {"enum": ["allowed", "forbidden"]},
         "name": {"type": "string", "minLength": 1},
         "displayName": {"type": "string", "minLength": 1},
+        "baseBranch": {"type": "string", "minLength": 1},
         "setup": {"enum": ["run", "skip", "inherit"]}
       },
       "allOf": [
+        {
+          "if": {
+            "properties": {
+              "worktree": {"enum": ["new-child", "new-top-level"]}
+            },
+            "required": ["worktree"]
+          },
+          "then": {"required": ["name", "baseBranch"]}
+        },
         {
           "if": {"properties": {"role": {"enum": ["reviewer", "antislop", "planreviewer"]}}},
           "then": {"properties": {"launch": {"const": "sol-xhigh"}}}

@@ -21,13 +21,10 @@ journal, delete it instead of archiving it.
 - Scaffold only after `finalize-wave` wrote `final.json`; the helper refuses earlier.
   The helper never calls Orca and never changes the journal, except to add
   `feedback.md`.
-- Verdict first: one sentence the reader can act on without other context.
 - Every claim names its source: a receipt file, a report field, or path:line. Cut
   claims without a source before archiving.
 - Keep two judgments apart: did the orchestration work, and is the code good. A
   healthy swarm with a `FAIL` review is mechanics PASS and content FAIL.
-- Per worker: one keep and one change, tied to that worker's report. If there is
-  nothing concrete to say, delete the section.
 - Every next-wave suggestion must be a change someone can make in the next manifest:
   a shard boundary, AC wording, launch choice, repair budget, or worktree layout.
   "Communicate better" is not a change.
@@ -87,8 +84,8 @@ Pick rules for the next wave manifest:
 uv run --no-project <skill>/scripts/feedback.py rules --scopes native,publication
 ```
 
-Put the returned `forManifest` lines into `envelope.knownFailureModes` (max 6,
-about 1000 characters). Retire a rule when reviewers report it obsolete:
+Put the returned `forManifest` lines into `envelope.knownFailureModes`. Retire a
+rule when reviewers report it obsolete:
 
 ```text
 uv run --no-project <skill>/scripts/feedback.py rules --retire <id> --reason "..."

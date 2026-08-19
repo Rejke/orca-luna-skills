@@ -241,6 +241,92 @@ class CollectTests(unittest.TestCase):
         self.assertEqual(state["answers"], 1)
         self.assertEqual(state["notification_status"], "pending")
 
+    def test_collect_replay_keeps_showing_standing_attention(self) -> None:
+        self.write_incoming(
+            valid_report(taskStatus="blocked", question="Which base branch wins?")
+        )
+        for _ in (1, 2):
+            with patch("builtins.print") as printed:
+                helper.command_collect_reports(
+                    Namespace(receipt_dir=str(self.directory))
+                )
+            out = json.loads(printed.call_args.args[0])
+            self.assertEqual(out["status"], "action_required")
+            self.assertEqual(
+                out["attention"][0]["question"], "Which base branch wins?"
+            )
+
+    def test_stale_wake_marker_is_taken_over(self) -> None:
+        helper.notification_path(self.directory).write_text(
+            json.dumps({"createdAt": 1.0}), encoding="utf-8"
+        )
+        self.write_incoming(valid_report())
+        queued = {"ok": True, "result": {"queued": True}}
+        with (
+            patch.dict(os.environ, {"ORCA_TERMINAL_HANDLE": "term_worker"}),
+            patch.object(helper, "call_orca", return_value=(0, queued, "")) as orca,
+            patch("builtins.print"),
+        ):
+            helper.command_notify_controller(
+                Namespace(receipt_dir=str(self.directory))
+            )
+        self.assertTrue(
+            any(c.args[0][:2] == ["terminal", "send"] for c in orca.call_args_list)
+        )
+        worker = helper.read_wave_state(self.directory)["workers"][0]
+        self.assertEqual(worker["notification_status"], "queued")
+
+    def test_answer_refuses_a_worker_that_is_not_blocked(self) -> None:
+        self.write_incoming(valid_report())
+        helper.scan_incoming_reports(self.directory)
+        answer_file = self.directory / "sol-answer.txt"
+        answer_file.write_text("Use main.", encoding="utf-8")
+        with self.assertRaises(helper.HelperError) as context:
+            helper.command_answer(
+                Namespace(
+                    receipt_dir=str(self.directory),
+                    worker=self.worker_id,
+                    file=str(answer_file),
+                )
+            )
+        self.assertIn("not blocked", str(context.exception))
+
+    def test_stop_treats_a_gone_terminal_as_stopped(self) -> None:
+        gone = {"ok": False, "error": {"code": "selector_not_found"}}
+        with (
+            patch.object(helper, "call_orca", return_value=(1, gone, "selector_not_found")),
+            patch("builtins.print"),
+        ):
+            result = helper.reconcile_stop_wave(self.directory)
+        self.assertEqual(result["status"], "cancelled")
+        state = helper.read_wave_state(self.directory)["workers"][0]
+        self.assertEqual(state["stop_status"], "stopped")
+
+    def test_status_marks_idle_worker_without_report_as_suspect(self) -> None:
+        idle = {"ok": True}
+        with (
+            patch.object(helper, "call_orca", return_value=(0, idle, "")),
+            patch("builtins.print") as printed,
+        ):
+            helper.command_status(Namespace(receipt_dir=str(self.directory)))
+        out = json.loads(printed.call_args.args[0])
+        self.assertEqual(out["suspects"], 1)
+        self.assertTrue(out["workers"][0]["suspect"])
+        self.write_incoming(valid_report())
+        with (
+            patch.object(helper, "call_orca", return_value=(0, idle, "")),
+            patch("builtins.print") as printed,
+        ):
+            helper.command_status(Namespace(receipt_dir=str(self.directory)))
+        out = json.loads(printed.call_args.args[0])
+        self.assertEqual(out["suspects"], 0)
+
+    def test_settled_report_records_a_timestamp(self) -> None:
+        self.write_incoming(valid_report())
+        helper.scan_incoming_reports(self.directory)
+        state = helper.read_wave_state(self.directory)["workers"][0]
+        self.assertIsInstance(state.get("settled_at"), float)
+
     def test_finalize_closes_worker_terminals_when_clean(self) -> None:
         self.write_incoming(valid_report())
         helper.scan_incoming_reports(self.directory)

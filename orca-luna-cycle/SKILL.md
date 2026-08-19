@@ -98,9 +98,9 @@ not copy their text. The helper rejects unknown fields, duplicate worker IDs or
 worktree names, unknown ACs, unsafe shared mutators, and wrong modes before it
 touches Orca.
 
-Optional `envelope.knownFailureModes`: up to 6 learned rules (240 characters each,
-1000 total). Get them from the feedback skill's `rules` command. The renderer adds
-them to every worker prompt as a KNOWN FAILURE MODES section.
+Optional `envelope.knownFailureModes`: learned rules from the feedback skill's
+`rules` command; the helper enforces the size caps. The renderer adds them to
+every worker prompt as a KNOWN FAILURE MODES section.
 
 Keep the manifest lean. The rendered prompt already carries the role charter, the
 report contract, the verdict rules, and the learning arrays — do not restate any of
@@ -183,7 +183,7 @@ uv run --no-project <skill>/scripts/orca_luna_worker.py dispatch-wave \
 ```
 
 For each worker the helper: creates the worktree when the manifest asks for one
-(`worktree create`, with setup); creates a visible Orca terminal tab that starts the
+(`worktree create` with the worker's required `baseBranch` and setup); creates a visible Orca terminal tab that starts the
 agent with the exact spawn command (`terminal create --command`); waits for the
 agent to reach idle; captures the boot banner as launch evidence; writes the full
 prompt to `prompts/<worker>.txt`; and sends the terminal one short line — "Read the
@@ -234,7 +234,10 @@ itself failed.
 
 Follow the `next` field. `action_required` lists invalid reports, failures,
 material verdicts, and questions. Handle them, then return to idle until the next
-wake. Never run collect again just because nothing arrived.
+wake. Never run collect again just because nothing arrived. When no wake has
+arrived for far longer than the task should take, run `status --receipt-dir`
+once: it marks workers whose terminal sits idle without a report file, and you
+re-engage a marked worker with `terminal send` or stop the wave.
 
 ## Questions: blocked workers stay warm
 

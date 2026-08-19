@@ -48,14 +48,20 @@ def receipt_dir(requested: str | None) -> Path:
     return path.resolve()
 
 
-def worker_reports(directory: Path) -> dict[str, dict[str, Any]]:
+def worker_reports(
+    directory: Path, *, accepted_only: bool = False
+) -> dict[str, dict[str, Any]]:
     reports: dict[str, dict[str, Any]] = {}
     reports_path = directory / "reports"
     if not reports_path.is_dir():
         return reports
     for path in sorted(reports_path.glob("*.json")):
         payload = load_json(path)
-        report = payload.get("report") if isinstance(payload, dict) else None
+        if not isinstance(payload, dict):
+            continue
+        if accepted_only and payload.get("accepted") is not True:
+            continue
+        report = payload.get("report")
         reports[path.stem] = report if isinstance(report, dict) else {}
     return reports
 
@@ -71,6 +77,12 @@ def load_patterns() -> dict[str, Any]:
     data = load_json(path)
     if not isinstance(data, dict) or data.get("patternsSchemaVersion") != 1:
         raise HelperError(f"unsupported patterns file: {path}")
+    raw_gaps = data.get("gapCounts")
+    data["gapCounts"] = {
+        kind: count
+        for kind, count in (raw_gaps.items() if isinstance(raw_gaps, dict) else [])
+        if isinstance(kind, str) and isinstance(count, int)
+    }
     return data
 
 
@@ -101,7 +113,7 @@ def ingest_wave(directory: Path) -> dict[str, Any]:
         "ruleFeedback": 0,
         "capBlocked": [],
     }
-    for worker_id, report in worker_reports(directory).items():
+    for worker_id, report in worker_reports(directory, accepted_only=True).items():
         entries = report.get("promptFeedback")
         for entry in entries[:3] if isinstance(entries, list) else []:
             if not isinstance(entry, dict):
@@ -397,10 +409,29 @@ def command_rules(args: argparse.Namespace) -> int:
         return 0
     scopes = {part.strip() for part in (args.scopes or "").split(",") if part.strip()}
     selected = select_rules(data, scopes, args.limit, args.max_chars)
+    gap_counts = data.get("gapCounts", {})
+    hot_gaps = sorted(
+        (
+            kind
+            for kind, count in gap_counts.items()
+            if kind in GAP_KINDS and kind != "prompt" and count >= 5
+        ),
+        key=lambda kind: -gap_counts[kind],
+    )
     print(
         compact(
             {
                 "status": "ok",
+                "gapCounts": gap_counts,
+                **(
+                    {
+                        "gapNote": "recurring non-prompt gaps ("
+                        + ", ".join(hot_gaps)
+                        + "): consider a charter or tooling fix, not a wave rule"
+                    }
+                    if hot_gaps
+                    else {}
+                ),
                 "active": sum(
                     1 for item in data["patterns"] if item.get("status") == "active"
                 ),
@@ -482,6 +513,7 @@ def command_self_test(_: argparse.Namespace) -> int:
         (directory / "reports" / "w1.json").write_text(
             json.dumps(
                 {
+                    "accepted": True,
                     "report": {
                         "findings": [
                             {"severity": "high", "title": "t", "evidence": "e"}
@@ -550,6 +582,7 @@ def command_self_test(_: argparse.Namespace) -> int:
             (second / "reports" / "w2.json").write_text(
                 json.dumps(
                     {
+                        "accepted": True,
                         "report": {
                             "promptFeedback": [
                                 {
@@ -613,6 +646,7 @@ def command_self_test(_: argparse.Namespace) -> int:
             (third / "reports" / "w3.json").write_text(
                 json.dumps(
                     {
+                        "accepted": True,
                         "report": {
                             "promptFeedback": [
                                 {
@@ -627,8 +661,29 @@ def command_self_test(_: argparse.Namespace) -> int:
                 ),
                 encoding="utf-8",
             )
+            (third / "reports" / "w4.json").write_text(
+                json.dumps(
+                    {
+                        "accepted": False,
+                        "report": {
+                            "promptFeedback": [
+                                {
+                                    "failureClass": "poisoned rule",
+                                    "rule": "Never trust a rejected report.",
+                                    "severity": "critical",
+                                    "scopes": ["native"],
+                                }
+                            ]
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
             summary = ingest_wave(third)
             assert summary["capBlocked"] == ["detached-blocking-work"]
+            assert "poisoned-rule" not in {
+                record["id"] for record in load_patterns()["patterns"]
+            }
             data = load_patterns()
             by_id = {record["id"]: record for record in data["patterns"]}
             assert by_id["detached-blocking-work"]["status"] == "candidate"

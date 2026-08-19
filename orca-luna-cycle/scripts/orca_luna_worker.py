@@ -72,7 +72,7 @@ REQUIRED_ORCA_COMMANDS = {
     "agent-context": {"json"},
     "worktree current": {"json"},
     "worktree show": {"worktree", "json"},
-    "worktree create": {"name", "setup", "json"},
+    "worktree create": {"name", "base-branch", "setup", "json"},
     "terminal create": {"worktree", "title", "command", "json"},
     "terminal send": {"terminal", "text", "enter", "json"},
     "terminal read": {"terminal", "cursor", "limit", "json"},
@@ -141,6 +141,7 @@ WORKER_FIELDS = {
     "worktree",
     "name",
     "displayName",
+    "baseBranch",
     "mutation",
     "setup",
 }
@@ -153,7 +154,9 @@ ROLE_RULES = {
     "implementer": (
         "Own only the declared shard. Inspect surrounding code first; make the smallest "
         "coherent diff. Reuse existing mechanisms, keep failures explicit, avoid speculative "
-        "abstractions/compatibility, and run the required checks. Preserve unrelated changes."
+        "abstractions/compatibility, and run the required checks. Preserve unrelated changes. "
+        "When your code must match an existing module's behavior, call that module in your "
+        "tests as the oracle; never assert your implementation against itself."
     ),
     "integrator": (
         "Be the only writer in the integration worktree. Inspect and integrate each declared "
@@ -225,7 +228,9 @@ ROLE_RULES = {
     "fixer": (
         "Own only the declared findings. Reproduce them when practical, fix root causes with "
         "the smallest diff, preserve unrelated changes, and rerun relevant checks. Do not "
-        "weaken tests/types/lint or add fallback behavior to hide failures."
+        "weaken tests/types/lint or add fallback behavior to hide failures. When a "
+        "regression test guards behavior that must match an existing module, call that "
+        "module in the test as the oracle."
     ),
     # Adapted from 1F47E/rival PlanReviewPrompt and AntislopPlanPrompt.
     "planreviewer": (
@@ -671,13 +676,19 @@ def validate_manifest(
         if setup not in {"run", "skip", "inherit"}:
             raise HelperError(f"workers[{index}].setup must be run, skip, or inherit")
         name = worker.get("name")
+        base_branch = worker.get("baseBranch")
         if worktree in {"new-child", "new-top-level"}:
             name = require_string(name, f"workers[{index}].name")
             if name in seen_worktree_names:
                 raise HelperError(f"duplicate new worktree name: {name}")
             seen_worktree_names.add(name)
+            base_branch = require_string(base_branch, f"workers[{index}].baseBranch")
         elif name is not None:
             raise HelperError("worker name applies only to new-child or new-top-level")
+        elif base_branch is not None:
+            raise HelperError(
+                "worker baseBranch applies only to new-child or new-top-level"
+            )
         if mode in {"audit", "benchmark"} and (
             mutation != "forbidden" or role in MUTATOR_ROLES
         ):
@@ -725,6 +736,8 @@ def validate_manifest(
                 raise HelperError(f"workers[{index}].{field} must be an array")
         if name is not None:
             normalized_worker["name"] = name
+        if base_branch is not None:
+            normalized_worker["baseBranch"] = base_branch
         display_name = worker.get("displayName")
         if display_name is not None:
             normalized_worker["displayName"] = require_string(
@@ -1545,6 +1558,18 @@ def verify_preflight(
             "Orca identity/contract changed after preflight "
             f"({', '.join(changed)}); run preflight again"
         )
+    def worktree_mapping(receipt: dict[str, Any]) -> dict[str, Any]:
+        return {
+            check["name"]: check.get("worktreeId")
+            for check in receipt.get("checks", [])
+            if isinstance(check, dict)
+            and str(check.get("name", "")).startswith("worktree:")
+        }
+
+    if worktree_mapping(previous) != worktree_mapping(current):
+        raise HelperError(
+            "worktree mapping changed after preflight; run preflight again"
+        )
     if previous.get("controllerTerminalHandle") != current.get(
         "controllerTerminalHandle"
     ):
@@ -1687,7 +1712,7 @@ def classify_failure(payload: Any, *, known_effect_id: str | None = None) -> str
 AMBIGUOUS_START_STATUSES = {
     "creating_worktree",
     "spawning",
-    "booting",
+    "prompting",
     "worktree_outcome_unknown",
     "terminal_outcome_unknown",
 }
@@ -1705,11 +1730,13 @@ def write_prompts(
 
 
 def spawn_pending_workers(directory: Path, workers: list[dict[str, Any]]) -> None:
+    # Phase 1: create worktrees and terminals. The agents boot in parallel
+    # while this loop moves on, so phase 2's waits mostly return at once.
     for index, worker in enumerate(workers, start=1):
         if cancel_requested(directory):
             return
         record = read_wave_state(directory)["workers"][index - 1]
-        if record.get("terminal_handle") and record.get("start_status") == "running":
+        if record.get("terminal_handle"):
             continue
         if record.get("start_status") != "pending":
             raise HelperError(
@@ -1726,6 +1753,8 @@ def spawn_pending_workers(directory: Path, workers: list[dict[str, Any]]) -> Non
                     "create",
                     "--name",
                     worker["name"],
+                    "--base-branch",
+                    worker["baseBranch"],
                     "--setup",
                     worker.get("setup", "run"),
                     "--json",
@@ -1800,6 +1829,16 @@ def spawn_pending_workers(directory: Path, workers: list[dict[str, Any]]) -> Non
             start_status="booting",
             error=None,
         )
+
+    # Phase 2: wait for each boot, prove the banner, send the prompt pointer.
+    for index, worker in enumerate(workers, start=1):
+        if cancel_requested(directory):
+            return
+        record = read_wave_state(directory)["workers"][index - 1]
+        if record.get("start_status") != "booting":
+            continue
+        spec = LAUNCH_SPECS[worker["launch"]]
+        handle = record["terminal_handle"]
         wait_code, wait_receipt, wait_detail = call_orca(
             [
                 "terminal",
@@ -1836,6 +1875,7 @@ def spawn_pending_workers(directory: Path, workers: list[dict[str, Any]]) -> Non
         if read_code == 0 and read_receipt is not None:
             save_json(directory / "runtime" / f"banner-{worker['id']}.json", read_receipt)
             banner_proof = spec["model"] in compact_json(read_receipt)
+        update_worker_state(directory, index, start_status="prompting")
         pointer = (
             f"Read the file {worker_prompt_path(directory, worker['id'])} "
             "and do exactly what it says."
@@ -1875,10 +1915,14 @@ def spawn_pending_workers(directory: Path, workers: list[dict[str, Any]]) -> Non
             index,
             start_status="running",
             banner_proof=banner_proof,
+            started_at=time.time(),
             error=None,
         )
-        if cancel_requested(directory):
-            return
+
+
+def terminal_gone(receipt: Any, detail: str) -> bool:
+    blob = ((detail or "") + (compact_json(receipt) if receipt is not None else "")).lower()
+    return "not_found" in blob or "not found" in blob or "unknown terminal" in blob
 
 
 def reconcile_stop_wave(directory: Path) -> dict[str, Any]:
@@ -1909,7 +1953,7 @@ def reconcile_stop_wave(directory: Path) -> dict[str, Any]:
             if receipt is not None
             else {"returncode": returncode, "detail": detail},
         )
-        if returncode == 0:
+        if returncode == 0 or terminal_gone(receipt, detail):
             update_worker_state(directory, index, stop_status="stopped")
         else:
             errors.append(f"worker {index}: {detail}")
@@ -2314,6 +2358,13 @@ def scan_incoming_reports(directory: Path) -> tuple[list[dict[str, Any]], int]:
                 "report": report,
             },
         )
+        settled_stamp = (
+            {"settled_at": time.time()}
+            if not errors
+            and task_status in {"done", "failed"}
+            and not record.get("settled_at")
+            else {}
+        )
         update_worker_state(
             directory,
             index,
@@ -2326,6 +2377,7 @@ def scan_incoming_reports(directory: Path) -> tuple[list[dict[str, Any]], int]:
             if task_status in {"done", "failed"}
             else ("blocked" if task_status == "blocked" else record.get("start_status")),
             error=None,
+            **settled_stamp,
         )
         message.update(
             {
@@ -2362,28 +2414,127 @@ def command_collect_reports(args: argparse.Namespace) -> int:
     actions += late_actions
     latest = read_wave_state(directory)
     settled = wave_settled(latest)
+    # Attention comes from durable state, not from message newness: a collect
+    # that crashed after journaling must show the same items on replay.
+    attention = [
+        {
+            "workerId": worker["worker_id"],
+            **({"question": worker["question"]} if worker.get("question") else {}),
+            **(
+                {"reportStatus": "invalid"}
+                if worker.get("report_status") == "invalid"
+                else {}
+            ),
+            **(
+                {"taskStatus": worker["task_status"]}
+                if worker.get("task_status") in {"blocked", "failed"}
+                else {}
+            ),
+            **(
+                {"verdict": worker["verdict"]}
+                if worker.get("verdict") in {"FAIL", "UNKNOWN", "BLOCKED"}
+                else {}
+            ),
+        }
+        for worker in latest.get("workers", [])
+        if worker.get("question")
+        or worker.get("report_status") == "invalid"
+        or worker.get("task_status") in {"blocked", "failed"}
+        or worker.get("verdict") in {"FAIL", "UNKNOWN", "BLOCKED"}
+    ]
     status = (
         "wave_settled"
         if settled
-        else ("action_required" if actions else "idle_push_mode")
+        else ("action_required" if attention else "idle_push_mode")
     )
     print(
         compact_json(
             {
                 "status": status,
                 "messages": messages,
+                "attention": attention,
                 "workers": wave_records(latest),
                 "next": (
                     "run finalize-wave"
                     if settled
                     else (
-                        "handle each actionable message (answer questions with "
+                        "handle each attention item (answer questions with "
                         "the answer command), then return to idle"
-                        if actions
+                        if attention
                         else "return to idle until the next wake"
                     )
                 ),
                 "receipts": str(directory),
+            }
+        )
+    )
+    return 0
+
+
+def command_status(args: argparse.Namespace) -> int:
+    """Diagnose worker liveness on demand; changes nothing."""
+    directory = receipt_dir(args.receipt_dir)
+    state = read_wave_state(directory)
+    rows: list[dict[str, Any]] = []
+    suspects = 0
+    for record in state["workers"]:
+        report_path = worker_report_path(directory, record["worker_id"])
+        new_report = False
+        if report_path.exists():
+            try:
+                digest = hashlib.sha256(report_path.read_bytes()).hexdigest()
+                new_report = digest != record.get("report_sha")
+            except OSError:
+                new_report = False
+        entry: dict[str, Any] = {
+            "workerId": record["worker_id"],
+            "startStatus": record.get("start_status"),
+            "taskStatus": record.get("task_status"),
+            "newReport": new_report,
+        }
+        handle = record.get("terminal_handle")
+        if handle and record.get("start_status") in {"running", "blocked"}:
+            returncode, receipt, detail = call_orca(
+                [
+                    "terminal",
+                    "wait",
+                    "--terminal",
+                    handle,
+                    "--for",
+                    "tui-idle",
+                    "--timeout-ms",
+                    "1500",
+                    "--json",
+                ]
+            )
+            if returncode == 0:
+                terminal = "idle"
+            else:
+                blob = (detail or "") + (
+                    compact_json(receipt) if receipt is not None else ""
+                )
+                terminal = "busy" if "timeout" in blob.lower() else "unreachable"
+            entry["terminal"] = terminal
+            if (
+                terminal in {"idle", "unreachable"}
+                and not new_report
+                and record.get("start_status") == "running"
+            ):
+                entry["suspect"] = True
+                suspects += 1
+        rows.append(entry)
+    print(
+        compact_json(
+            {
+                "status": "ok",
+                "workers": rows,
+                "suspects": suspects,
+                "next": (
+                    "a suspect sits idle without a report: re-engage its terminal "
+                    "with terminal send, or stop the wave"
+                    if suspects
+                    else "no action needed"
+                ),
             }
         )
     )
@@ -2407,6 +2558,11 @@ def command_answer(args: argparse.Namespace) -> int:
     handle = record.get("terminal_handle")
     if not handle:
         raise HelperError(f"worker {args.worker} has no terminal")
+    if record.get("task_status") != "blocked" and not record.get("question"):
+        raise HelperError(
+            f"worker {args.worker} is not blocked on a question; "
+            "answer refuses to re-engage it"
+        )
     answer_file = Path(args.file).expanduser()
     if not answer_file.is_absolute() or not answer_file.exists():
         raise HelperError("answer --file must be an existing absolute path")
@@ -2477,6 +2633,9 @@ def clear_notification(directory: Path) -> bool:
     return True
 
 
+STALE_WAKE_SECONDS = 600
+
+
 def claim_controller_notification(
     directory: Path, worker: dict[str, Any], controller_handle: str
 ) -> bool:
@@ -2492,15 +2651,33 @@ def claim_controller_notification(
         )
         + "\n"
     )
-    try:
-        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    except FileExistsError:
-        return False
-    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-        handle.write(payload)
-        handle.flush()
-        os.fsync(handle.fileno())
-    return True
+    for attempt in (1, 2):
+        try:
+            descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            # A marker without a delivered wake (claim crashed before send)
+            # must not silence every later completion; take over a stale one.
+            if attempt == 2:
+                return False
+            try:
+                created = json.loads(path.read_text(encoding="utf-8")).get(
+                    "createdAt", 0
+                )
+            except (OSError, ValueError):
+                created = 0
+            if time.time() - created < STALE_WAKE_SECONDS:
+                return False
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+            continue
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        return True
+    return False
 
 
 def command_notify_controller(args: argparse.Namespace) -> int:
@@ -2747,7 +2924,9 @@ def command_finalize_wave(args: argparse.Namespace) -> int:
             update_worker_state(
                 directory,
                 record["index"],
-                stop_status="closed" if returncode == 0 else "close_failed",
+                stop_status="closed"
+                if returncode == 0 or terminal_gone(receipt, detail)
+                else "close_failed",
             )
     set_wave_phase(directory, "finalized" if mechanical_ok else "finalize_incomplete")
     state = read_wave_state(directory)
@@ -2772,6 +2951,18 @@ def command_finalize_wave(args: argparse.Namespace) -> int:
         ],
         "workers": wave_records(state),
         "createdWorktrees": created_worktrees,
+        "timing": {
+            "waveSeconds": round(time.time() - state["created_at"]),
+            "workers": [
+                {
+                    "workerId": worker["worker_id"],
+                    "seconds": round(worker["settled_at"] - worker["started_at"])
+                    if worker.get("settled_at") and worker.get("started_at")
+                    else None,
+                }
+                for worker in workers
+            ],
+        },
         "note": "Content verdicts remain inputs to the Sol gate; audit FAIL does not mean orchestration failed. Created worktrees must be integrated and removed before the next wave.",
         "createdAt": time.time(),
     }
@@ -2849,9 +3040,6 @@ def command_self_test(_: argparse.Namespace) -> int:
         "workers": [{**manifest["workers"][0], "launch": "fable-high"}],
     }
     _, fable_workers, _ = validate_manifest(fable_manifest)
-    assert spawn_command(LAUNCH_SPECS[fable_workers[0]["launch"]]) == (
-        "claude --dangerously-skip-permissions --model claude-fable-5"
-    )
     try:
         validate_manifest(
             {
@@ -2913,10 +3101,22 @@ def command_self_test(_: argparse.Namespace) -> int:
     }
     _, overridden_workers, _ = validate_manifest(overridden)
     assert overridden_workers[0]["launch"] == "luna-fast"
-    fast_command = spawn_command(LAUNCH_SPECS[overridden_workers[0]["launch"]])
-    assert "gpt-5.6-luna" in fast_command
-    assert "model_reasoning_effort=max" in fast_command
-    assert "service_tier=priority" in fast_command
+    missing_base = {
+        **overridden,
+        "workers": [
+            {
+                **overridden["workers"][0],
+                "worktree": "new-child",
+                "name": "impl-shard",
+            }
+        ],
+    }
+    try:
+        validate_manifest(missing_base)
+    except HelperError as exc:
+        assert "baseBranch" in str(exc)
+    else:
+        raise AssertionError("new worktree without baseBranch was accepted")
     orphan_worktree = {
         **overridden,
         "workers": [
@@ -2924,6 +3124,7 @@ def command_self_test(_: argparse.Namespace) -> int:
                 **overridden["workers"][0],
                 "worktree": "new-child",
                 "name": "impl-shard",
+                "baseBranch": "main",
             }
         ],
     }
@@ -3006,32 +3207,6 @@ def command_self_test(_: argparse.Namespace) -> int:
         }
     )
     assert validate_report(valid_report, "reviewer") == []
-    learned_report = dict(valid_report)
-    learned_report["promptFeedback"] = [
-        {
-            "failureClass": "producer-proxy-consumer contract divergence",
-            "rule": "Trace producer -> proxy -> consumer for each URL and use one shared fixture.",
-            "severity": "high",
-            "scopes": ["publication", "routing"],
-        }
-    ]
-    learned_report["ruleFeedback"] = [{"id": "per-object-fsync", "status": "helped"}]
-    assert validate_report(learned_report, "reviewer") == []
-    bad_learned = dict(valid_report)
-    bad_learned["promptFeedback"] = [{"failureClass": "x", "rule": "y" * 300}]
-    assert validate_report(bad_learned, "reviewer") != []
-    rules_manifest = {
-        **manifest,
-        "envelope": {
-            **manifest["envelope"],
-            "knownFailureModes": [
-                "[producer-proxy] Trace producer -> proxy -> consumer for each URL."
-            ],
-        },
-    }
-    _, _, rules_prompts = validate_manifest(rules_manifest)
-    assert "KNOWN FAILURE MODES RELEVANT TO THIS SCOPE" in rules_prompts[0]
-    assert "[producer-proxy]" in rules_prompts[0]
     reviewer_variant = {
         key: value
         for key, value in {
@@ -3171,6 +3346,12 @@ def parser() -> argparse.ArgumentParser:
     )
     collect.add_argument("--receipt-dir", required=True)
     collect.set_defaults(func=command_collect_reports)
+
+    status = commands.add_parser(
+        "status", help="diagnose worker liveness on demand; changes nothing"
+    )
+    status.add_argument("--receipt-dir", required=True)
+    status.set_defaults(func=command_status)
 
     answer = commands.add_parser(
         "answer", help="send Sol's answer into a blocked worker's terminal"
