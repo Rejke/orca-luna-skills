@@ -422,16 +422,9 @@ After the verdict, if the user wants a retro or the wave taught something, write
 archive feedback with the `orca-luna-feedback` skill. Read its log first when you
 change this skill.
 
-## Maintain the helper
-
-`scripts/orca_luna_worker.py` is generated. Edit the source in
-`scripts/parts/*.py`, then rebuild the single-file bundle and run the checks:
+After changing this skill, run:
 
 ```text
-python3 <skill>/scripts/build_helper.py
 uv run --no-project <skill>/scripts/orca_luna_worker.py self-test
 uv run --no-project <skill>/tests/test_helper.py
 ```
-
-Self-test fails when the bundle and `parts/` differ. The bundle must stay one
-file: every wave archives it into its receipts and pins its SHA-256.

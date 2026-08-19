@@ -41,6 +41,24 @@ uv run --no-project <skills>/orca-luna-cycle/tests/test_helper.py
 uv run --no-project <skills>/orca-luna-feedback/scripts/feedback.py self-test
 ```
 
+## Development
+
+`orca-luna-cycle/scripts/orca_luna_worker.py` is generated. Edit the source in
+`orca-luna-cycle/scripts/parts/*.py` (concatenated in filename order), then
+rebuild and test:
+
+```bash
+python3 orca-luna-cycle/scripts/build_helper.py
+uv run --no-project orca-luna-cycle/scripts/orca_luna_worker.py self-test
+uv run --no-project orca-luna-cycle/tests/test_helper.py
+```
+
+Self-test and the unit suite fail while the bundle and parts differ. The bundle
+must stay one file: every wave archives it into its receipts, pins its SHA-256,
+and workers run that copy by path. Parts hold no imports of their own — all
+imports live in `00_header.py` — and reference earlier parts' names as module
+globals.
+
 ## Credits
 
 The built-in reviewer and anti-slop charters are adapted from the review
