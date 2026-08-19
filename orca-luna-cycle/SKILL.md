@@ -102,6 +102,15 @@ Optional `envelope.knownFailureModes`: learned rules from the feedback skill's
 `rules` command; the helper enforces the size caps. The renderer adds them to
 every worker prompt as a KNOWN FAILURE MODES section.
 
+The plan has two floors. `envelope.goal` is the product mission: the user-facing
+outcome and who it serves — it renders as MISSION in every worker prompt.
+Acceptance criteria are the technical contract derived from that mission. Example:
+goal "A server admin sees what an update changes and whether it breaks their
+setup" → AC1 "diffCatalogs returns servers added/removed and per-server build
+changes with a breaking flag". A criterion you cannot trace to the mission is
+scope creep; a part of the mission no criterion covers is a gap — the
+planreviewer checks both.
+
 Keep the manifest lean. The rendered prompt already carries the role charter, the
 report contract, the verdict rules, and the learning arrays — do not restate any of
 them in acceptance criteria, constraints, or checks. One acceptance criterion is one testable
