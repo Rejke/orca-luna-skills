@@ -201,6 +201,13 @@ def render_prompt(worker: dict[str, Any], envelope: dict[str, Any], mode: str) -
             "failure classes a better worker prompt would have prevented; a "
             'rule names an exact check — "be careful" is not a rule.'
         )
+    if role == "fixer":
+        parts.append(
+            'In "fixed", account for every declared finding: its title plus '
+            "the evidence — path:line, test, or check — that closes it at "
+            'root cause. A finding you could not close stays out of "fixed" '
+            "and goes into risks with the exact blocker."
+        )
     prompt = "\n\n".join(parts).strip() + "\n"
     if len(prompt) > MAX_PROMPT_CHARS:
         raise HelperError(
