@@ -253,9 +253,11 @@ ROLE_RULES = {
         "same mechanism designed twice, and ceremony sections the work's size "
         "does not warrant. Name the cut, merge, deferral, or replacement.\n"
         "Report only issues you are confident are real; no wording nitpicks. "
-        "Every finding cites the exact criterion or section. A solid plan "
-        "gets PASS with few or zero findings; do not invent problems. Sol "
-        "issues the final verdict from your report."
+        "Every finding cites the exact criterion or section. Do not ask the "
+        "controller what the plan means: an ambiguity you would ask about is "
+        "a finding — state your best reading and let the plan be corrected. "
+        "A solid plan gets PASS with few or zero findings; do not invent "
+        "problems. Sol issues the final verdict from your report."
     ),
 }
 
@@ -383,8 +385,9 @@ def render_prompt(worker: dict[str, Any], envelope: dict[str, Any], mode: str) -
         f"ROLE: {role.upper()}",
         f"MODE\n{mode}",
         f"MISSION\n{envelope['goal']}",
-        f"GOAL\n{worker['goal']}",
     ]
+    if worker["goal"].strip() != envelope["goal"].strip():
+        parts.append(f"GOAL\n{worker['goal']}")
     for key, label in (
         ("scope", "SCOPE"),
         ("ownership", "OWNERSHIP"),
@@ -469,7 +472,7 @@ def render_prompt(worker: dict[str, Any], envelope: dict[str, Any], mode: str) -
     if role in REVIEW_ROLES:
         parts.append(
             'taskStatus is "done" even when the verdict is FAIL or UNKNOWN; '
-            "the verdict judges the code, not your job. When the evidence "
+            "the verdict judges the work under review, not your job. When the evidence "
             "cannot prove or refute a claim, use verdict UNKNOWN and list the "
             "unprovable claims in risks; never turn an evidence gap into PASS "
             "or into a FAIL finding without a defect. promptFeedback is for "
@@ -3056,6 +3059,15 @@ def command_self_test(_: argparse.Namespace) -> int:
     )
     assert plan_workers[0]["launch"] == "sol-xhigh"
     assert "mislead an implementer" in plan_prompts[0]
+    same_goal = {
+        **manifest,
+        "workers": [
+            {**manifest["workers"][0], "goal": manifest["envelope"]["goal"]}
+        ],
+    }
+    _, _, same_goal_prompts = validate_manifest(same_goal)
+    assert "\nGOAL\n" not in same_goal_prompts[0]
+    assert "MISSION\n" in same_goal_prompts[0]
     assert "Verification gaps" in plan_prompts[0]
     assert "scope creep and YAGNI" in plan_prompts[0]
     try:
