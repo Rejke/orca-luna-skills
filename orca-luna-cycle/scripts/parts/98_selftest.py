@@ -36,6 +36,7 @@ def command_self_test(_: argparse.Namespace) -> int:
     }
     assert spawn_command(LAUNCH_SPECS["luna-max"]) == (
         "codex --dangerously-bypass-approvals-and-sandbox "
+        "-c check_for_update_on_startup=false "
         "-m gpt-5.6-luna -c model_reasoning_effort=max"
     )
     assert '"' not in spawn_command(LAUNCH_SPECS["luna-fast"])

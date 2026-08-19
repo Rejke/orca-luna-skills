@@ -101,12 +101,14 @@ def spawn_command(spec: dict[str, Any]) -> str:
     """Shell command that starts the worker agent with its exact launch spec.
 
     No quotes anywhere: the string crosses the Windows PowerShell bridge once,
-    and codex parses a bare -c value as a literal string. Agent sandbox and
-    approvals are off: an unattended terminal cannot answer a prompt.
+    and codex parses a bare -c value as a literal string. Agent sandbox,
+    approvals, and the startup update prompt are off: an unattended terminal
+    cannot answer any prompt.
     """
     if spec["agent"] == "codex":
         command = (
             "codex --dangerously-bypass-approvals-and-sandbox "
+            "-c check_for_update_on_startup=false "
             f"-m {spec['model']} -c model_reasoning_effort={spec['effort']}"
         )
         if spec.get("speedTier") == "fast":
@@ -3927,6 +3929,7 @@ def command_self_test(_: argparse.Namespace) -> int:
     }
     assert spawn_command(LAUNCH_SPECS["luna-max"]) == (
         "codex --dangerously-bypass-approvals-and-sandbox "
+        "-c check_for_update_on_startup=false "
         "-m gpt-5.6-luna -c model_reasoning_effort=max"
     )
     assert '"' not in spawn_command(LAUNCH_SPECS["luna-fast"])
