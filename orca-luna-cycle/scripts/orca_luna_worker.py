@@ -271,6 +271,9 @@ ROLE_RULES = {
         "Derive your own checklist from the plan itself before reading any "
         "hints; scope is a floor, not a ceiling — a topic the plan implies but "
         "the materials omit is a finding, not out of bounds. "
+        "When prior review reports are in scope, check each prior finding: "
+        "closed at its root cause, or still open — an unaddressed prior "
+        "finding is a finding. "
         "Report only issues you are confident are real; no wording nitpicks. "
         "Every finding cites the exact criterion or section. Do not ask the "
         "controller what the plan means: an ambiguity you would ask about is "
@@ -1637,28 +1640,20 @@ PLAN_REVIEW_MISSION = (
     "Review the attached plan as written; find what would make it fail, "
     "mislead an implementer, or ship the wrong thing."
 )
-PLAN_REVIEW_ACS = {
-    "AC1": (
-        "Every finding cites the exact plan section and the concrete repository "
-        "contract, path, or test entrypoint it conflicts with."
-    ),
-    "AC2": (
-        "Coverage comes from the plan itself: every step, criterion, and named "
-        "file is checked, plus what the plan implies but omits."
-    ),
-    "AC3": (
-        "Each prior finding is confirmed closed at root cause or cited as an "
-        "open blocker."
-    ),
-    "AC4": (
-        "The review is read-only and leaves the worktree and running services "
-        "unchanged."
-    ),
-}
+# ACs describe the artifact under review, never reviewer conduct — conduct
+# lives in the planreviewer charter.
+PLAN_REVIEW_AC_EXECUTABLE = (
+    "The plan as written is executable by an implementer without inventing "
+    "missing product or migration semantics."
+)
+PLAN_REVIEW_AC_PRIORS = (
+    "The revised plan closes every prior finding at its root cause or names "
+    "it as an open blocker."
+)
 
 
 def command_plan_review_manifest(args: argparse.Namespace) -> int:
-    """Emit a complete plan-review wave manifest; the mission and ACs are fixed.
+    """Emit a complete plan-review wave manifest.
 
     The controller hands over only the artifact under review. Anything it wants
     to highlight goes into worker context via --hint; hints widen the search,
@@ -1671,13 +1666,15 @@ def command_plan_review_manifest(args: argparse.Namespace) -> int:
     for prior in priors:
         if not Path(prior).is_file():
             raise HelperError(f"prior report not found: {prior}")
-    criteria = ["AC1", "AC2"] + (["AC3"] if priors else []) + ["AC4"]
+    criteria = {"AC1": PLAN_REVIEW_AC_EXECUTABLE}
+    if priors:
+        criteria["AC2"] = PLAN_REVIEW_AC_PRIORS
     worker: dict[str, Any] = {
         "id": args.worker_id,
         "role": "planreviewer",
         "displayName": "plan review",
         "goal": "Apply the plan-review charter to the plan file in scope.",
-        "criteria": criteria,
+        "criteria": list(criteria),
         "scope": [str(plan), *priors],
         "launch": "sol-xhigh",
     }
@@ -1689,15 +1686,7 @@ def command_plan_review_manifest(args: argparse.Namespace) -> int:
         "objective": f"Independent review of the plan {plan.name}.",
         "envelope": {
             "goal": PLAN_REVIEW_MISSION,
-            "acceptanceCriteria": {
-                key: PLAN_REVIEW_ACS[key] for key in criteria
-            },
-            "constraints": [
-                "Read the plan, the prior reports, and any repository files the "
-                "review needs; modify nothing.",
-                "Return PASS only if an implementer can execute the plan without "
-                "inventing missing semantics.",
-            ],
+            "acceptanceCriteria": criteria,
             "repairBudget": 0,
         },
         "defaults": {"worktree": "current", "mutation": "forbidden"},

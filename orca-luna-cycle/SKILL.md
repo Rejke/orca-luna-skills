@@ -137,8 +137,10 @@ angles, and the plan categories. The manifest adds only lens, scope, and criteri
 
 Before dispatching mutators on a new or complex envelope, run one audit wave
 first. Print the authored plan with `plan-brief --manifest <wave>.json` into a
-file, then generate the review wave — do not author it. The plan-review mission
-and ACs are fixed in the helper; the controller hands over only the artifact:
+file, then generate the review wave — do not author it. Reviewer conduct lives
+in the charter; the generated ACs state only what must be true of the artifact
+(the plan is executable; a revision closes prior findings). The controller
+hands over only the artifact:
 
 ```text
 uv run --no-project <skill>/scripts/orca_luna_worker.py plan-review-manifest \

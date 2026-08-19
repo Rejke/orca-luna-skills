@@ -641,7 +641,11 @@ class PlanReviewManifestTests(unittest.TestCase):
             self.assertEqual(worker["role"], "planreviewer")
             self.assertEqual(worker["launch"], "sol-xhigh")
             self.assertIn(str(plan.resolve()), worker["scope"])
-            self.assertIn("AC3", worker["criteria"])
+            self.assertEqual(worker["criteria"], ["AC1", "AC2"])
+            self.assertEqual(
+                manifest["envelope"]["acceptanceCriteria"]["AC2"],
+                helper.PLAN_REVIEW_AC_PRIORS,
+            )
             self.assertEqual(
                 manifest["envelope"]["goal"], helper.PLAN_REVIEW_MISSION
             )
@@ -662,7 +666,9 @@ class PlanReviewManifestTests(unittest.TestCase):
                     )
                 )
             manifest = json.loads(printed[0])
-            self.assertNotIn("AC3", manifest["envelope"]["acceptanceCriteria"])
+            self.assertEqual(
+                list(manifest["envelope"]["acceptanceCriteria"]), ["AC1"]
+            )
 
 
 class UsageTests(unittest.TestCase):
