@@ -179,13 +179,24 @@ class CollectTests(unittest.TestCase):
                 )
         self.assertIn("write your report", str(context.exception))
 
-    def test_notify_queues_one_wake_and_names_collect(self) -> None:
+    def notify_orca(self, script: dict[str, tuple[int, object, str]]):
+        """call_orca stub keyed by subcommand; unknown commands succeed."""
+
+        def fake(arguments: list[str]):
+            return script.get(arguments[1], (0, {"ok": True}, ""))
+
+        return patch.object(helper, "call_orca", side_effect=fake)
+
+    def test_notify_verifies_delivery_by_reading_the_banner(self) -> None:
         self.write_incoming(valid_report())
-        queued = {"ok": True, "result": {"queued": True}}
+        read_ok = {"ok": True, "result": {"text": "... [ORCA LUNA CYCLE: REPORTS READY] ..."}}
         with (
             patch.dict(os.environ, {"ORCA_TERMINAL_HANDLE": "term_worker"}),
-            patch.object(
-                helper, "call_orca", return_value=(0, queued, "")
+            self.notify_orca(
+                {
+                    "send": (0, {"ok": True, "result": {"queued": True}}, ""),
+                    "read": (0, read_ok, ""),
+                }
             ) as orca,
             patch("builtins.print"),
         ):
@@ -193,24 +204,69 @@ class CollectTests(unittest.TestCase):
                 Namespace(receipt_dir=str(self.directory))
             )
         self.assertEqual(result, 0)
-        send_arguments = orca.call_args.args[0]
-        self.assertEqual(send_arguments[:2], ["terminal", "send"])
+        commands = [call.args[0][1] for call in orca.call_args_list]
+        self.assertEqual(commands, ["wait", "send", "read"])
+        send_arguments = orca.call_args_list[1].args[0]
         self.assertIn("term_controller", send_arguments)
         self.assertIn("collect-reports", " ".join(send_arguments))
         self.assertTrue(helper.notification_path(self.directory).exists())
         worker = helper.read_wave_state(self.directory)["workers"][0]
-        self.assertEqual(worker["notification_status"], "queued")
+        self.assertEqual(worker["notification_status"], "delivered")
+
+    def test_unverified_wake_retries_once_then_clears_the_marker(self) -> None:
+        self.write_incoming(valid_report())
+        read_empty = {"ok": True, "result": {"text": "shell prompt only"}}
+        with (
+            patch.dict(os.environ, {"ORCA_TERMINAL_HANDLE": "term_worker"}),
+            self.notify_orca(
+                {
+                    "send": (0, {"ok": True, "result": {"queued": True}}, ""),
+                    "read": (0, read_empty, ""),
+                }
+            ) as orca,
+            patch("builtins.print"),
+        ):
+            helper.command_notify_controller(Namespace(receipt_dir=str(self.directory)))
+        commands = [call.args[0][1] for call in orca.call_args_list]
+        self.assertEqual(commands.count("send"), 2)
+        self.assertFalse(helper.notification_path(self.directory).exists())
+        worker = helper.read_wave_state(self.directory)["workers"][0]
+        self.assertEqual(worker["notification_status"], "send_unverified")
 
     def test_failed_wake_send_clears_the_coalescing_marker(self) -> None:
         self.write_incoming(valid_report())
         failed_send = {"ok": False, "error": {"state": "unknown"}}
         with (
             patch.dict(os.environ, {"ORCA_TERMINAL_HANDLE": "term_worker"}),
-            patch.object(helper, "call_orca", return_value=(1, failed_send, "boom")),
+            self.notify_orca({"send": (1, failed_send, "boom")}),
             patch("builtins.print"),
         ):
             helper.command_notify_controller(Namespace(receipt_dir=str(self.directory)))
         self.assertFalse(helper.notification_path(self.directory).exists())
+
+    def test_rebind_controller_updates_the_wake_target(self) -> None:
+        with (
+            patch.dict(os.environ, {"ORCA_TERMINAL_HANDLE": "term_new_controller"}),
+            patch("builtins.print"),
+        ):
+            result = helper.command_rebind_controller(
+                Namespace(receipt_dir=str(self.directory))
+            )
+        self.assertEqual(result, 0)
+        state = helper.read_wave_state(self.directory)
+        self.assertEqual(
+            state["controller_terminal_handle"], "term_new_controller"
+        )
+
+    def test_rebind_refuses_a_worker_terminal(self) -> None:
+        with (
+            patch.dict(os.environ, {"ORCA_TERMINAL_HANDLE": "term_worker"}),
+            patch("builtins.print"),
+        ):
+            with self.assertRaises(helper.HelperError):
+                helper.command_rebind_controller(
+                    Namespace(receipt_dir=str(self.directory))
+                )
 
     def test_answer_reengages_the_same_terminal(self) -> None:
         self.write_incoming(
@@ -261,10 +317,15 @@ class CollectTests(unittest.TestCase):
             json.dumps({"createdAt": 1.0}), encoding="utf-8"
         )
         self.write_incoming(valid_report())
-        queued = {"ok": True, "result": {"queued": True}}
+        read_ok = {"ok": True, "result": {"text": "[ORCA LUNA CYCLE: REPORTS READY]"}}
         with (
             patch.dict(os.environ, {"ORCA_TERMINAL_HANDLE": "term_worker"}),
-            patch.object(helper, "call_orca", return_value=(0, queued, "")) as orca,
+            self.notify_orca(
+                {
+                    "send": (0, {"ok": True, "result": {"queued": True}}, ""),
+                    "read": (0, read_ok, ""),
+                }
+            ) as orca,
             patch("builtins.print"),
         ):
             helper.command_notify_controller(
@@ -274,7 +335,7 @@ class CollectTests(unittest.TestCase):
             any(c.args[0][:2] == ["terminal", "send"] for c in orca.call_args_list)
         )
         worker = helper.read_wave_state(self.directory)["workers"][0]
-        self.assertEqual(worker["notification_status"], "queued")
+        self.assertEqual(worker["notification_status"], "delivered")
 
     def test_answer_refuses_a_worker_that_is_not_blocked(self) -> None:
         self.write_incoming(valid_report())

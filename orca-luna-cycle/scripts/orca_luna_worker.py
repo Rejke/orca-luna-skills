@@ -3273,34 +3273,71 @@ def command_notify_controller(args: argparse.Namespace) -> int:
         "next field:\n"
         f"{collect_command}"
     )
-    returncode, receipt, detail = call_orca(
-        [
-            "terminal",
-            "send",
-            "--terminal",
-            controller_handle,
-            "--text",
-            text,
-            "--enter",
-            "--json",
-        ]
-    )
+    attempts: list[dict[str, Any]] = []
+    status = "outcome_unknown"
+    for attempt in (1, 2):
+        # A wake sent into a mid-turn TUI drowns in the controller's own
+        # input; wait for idle first, then send anyway — busy is a delay,
+        # not a veto.
+        call_orca(
+            [
+                "terminal",
+                "wait",
+                "--terminal",
+                controller_handle,
+                "--for",
+                "tui-idle",
+                "--timeout-ms",
+                "8000",
+                "--json",
+            ]
+        )
+        returncode, receipt, detail = call_orca(
+            [
+                "terminal",
+                "send",
+                "--terminal",
+                controller_handle,
+                "--text",
+                text,
+                "--enter",
+                "--json",
+            ]
+        )
+        attempts.append(
+            receipt
+            if receipt is not None
+            else {"returncode": returncode, "detail": detail}
+        )
+        if returncode != 0:
+            status = classify_failure(receipt)
+            break
+        # Exit code 0 proves Orca accepted the send, not that the controller
+        # saw it. Read the controller tail for the banner as delivery proof.
+        read_code, read_receipt, _ = call_orca(
+            [
+                "terminal",
+                "read",
+                "--terminal",
+                controller_handle,
+                "--limit",
+                "40",
+                "--json",
+            ]
+        )
+        blob = compact_json(read_receipt) if read_receipt is not None else ""
+        if read_code == 0 and "REPORTS READY" in blob:
+            status = "delivered"
+            break
+        status = "send_unverified"
     notification_receipt = (
         directory / "notifications" / f"{time.time_ns()}-{record['worker_id']}.json"
     )
-    save_json(
-        notification_receipt,
-        receipt
-        if receipt is not None
-        else {"returncode": returncode, "detail": detail},
-    )
-    if returncode == 0:
-        status = "queued"
-    else:
-        status = classify_failure(receipt)
-        # A retained marker after a failed or ambiguous send would coalesce every
-        # later wake into a wake that may never arrive and silently stall the
-        # wave; a duplicate wake is harmless because collect is idempotent.
+    save_json(notification_receipt, {"status": status, "attempts": attempts})
+    if status != "delivered":
+        # A retained marker after a failed or unverified send would coalesce
+        # every later wake into a wake that may never arrive and silently stall
+        # the wave; a duplicate wake is harmless because collect is idempotent.
         clear_notification(directory)
     update_worker_state(directory, record["index"], notification_status=status)
     print(
@@ -3310,8 +3347,54 @@ def command_notify_controller(args: argparse.Namespace) -> int:
                 "workerId": record["worker_id"],
                 "controllerTerminalHandle": controller_handle,
                 "receipt": str(notification_receipt),
-                "next": "stop; the wake attempt is exactly-once and must not be retried",
-                **({} if returncode == 0 else {"error": detail}),
+                "next": "stop; the wake attempt is exactly-once and must not "
+                "be retried",
+                **(
+                    {}
+                    if status == "delivered"
+                    else {
+                        "error": "the controller terminal did not show the "
+                        "wake banner; the report file itself is durable and "
+                        "collect-reports will find it"
+                    }
+                ),
+            }
+        )
+    )
+    return 0
+
+
+def command_rebind_controller(args: argparse.Namespace) -> int:
+    """Run from the (new) controller terminal after a controller restart:
+    point queued wakes at the terminal that is actually listening."""
+    directory = receipt_dir(args.receipt_dir)
+    handle = require_string(
+        os.environ.get("ORCA_TERMINAL_HANDLE"), "ORCA_TERMINAL_HANDLE"
+    )
+    if not re.fullmatch(r"term_[A-Za-z0-9_-]+", handle):
+        raise HelperError(f"ORCA_TERMINAL_HANDLE looks invalid: {handle!r}")
+    state = read_wave_state(directory)
+    if any(
+        worker.get("terminal_handle") == handle
+        for worker in state.get("workers", [])
+    ):
+        raise HelperError(
+            "this terminal belongs to a worker; run rebind-controller from "
+            "the controller terminal"
+        )
+    previous = state.get("controller_terminal_handle")
+    mutate_wave_state(
+        directory,
+        lambda current: current.update({"controller_terminal_handle": handle}),
+    )
+    print(
+        compact_json(
+            {
+                "status": "rebound",
+                "previous": previous,
+                "controllerTerminalHandle": handle,
+                "next": "run collect-reports once; wakes sent before the "
+                "rebind may have landed in the old terminal",
             }
         )
     )
@@ -3954,6 +4037,13 @@ def parser() -> argparse.ArgumentParser:
     )
     notify.add_argument("--receipt-dir", required=True)
     notify.set_defaults(func=command_notify_controller)
+
+    rebind = commands.add_parser(
+        "rebind-controller",
+        help="controller-only: retarget wakes after a controller restart",
+    )
+    rebind.add_argument("--receipt-dir", required=True)
+    rebind.set_defaults(func=command_rebind_controller)
 
     finalize = commands.add_parser(
         "finalize-wave",

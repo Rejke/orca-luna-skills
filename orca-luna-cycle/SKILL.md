@@ -265,10 +265,24 @@ invalid report. `taskStatus` values: `done` and `failed` settle the worker;
 
 Follow the `next` field. `action_required` lists invalid reports, failures,
 material verdicts, and questions. Handle them, then return to idle until the next
-wake. Never run collect again just because nothing arrived. When no wake has
-arrived for far longer than the task should take, run `status --receipt-dir`
-once: it marks workers whose terminal sits idle without a report file, and you
-re-engage a marked worker with `terminal send` or stop the wave.
+wake. Never run collect again just because nothing arrived.
+
+The wake is a doorbell, not the contract: the report file on disk is the durable
+truth, and a wake can drown in a busy controller TUI or land in a stale
+terminal. The worker verifies delivery by reading this terminal for the banner
+and retries once; `send_unverified` in the wave state means exactly that
+happened. So when no wake has arrived for far longer than the task should take,
+run `status --receipt-dir` once: it shows `newReport` for workers whose report
+file already exists, and it marks workers whose terminal sits idle without one.
+Collect the former; re-engage the latter with `terminal send` or stop the wave.
+
+If the controller session restarted in a new terminal, queued wakes still point
+at the dead one. Run this from the new controller terminal, then collect once:
+
+```text
+uv run --no-project <skill>/scripts/orca_luna_worker.py rebind-controller \
+  --receipt-dir /tmp/<wave>-receipts
+```
 
 ## Questions: blocked workers stay warm
 
