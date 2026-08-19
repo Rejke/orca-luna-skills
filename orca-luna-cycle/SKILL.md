@@ -370,6 +370,13 @@ anchor was reviewed, and which findings and risks remain. Return `PASS`, `BLOCKE
 or `UNKNOWN` with short proof. State model and effort only from the journal's spawn
 records.
 
+Weigh the reports; never average them. Merge duplicates (same file, line, and
+defect). A finding two reviewers report independently is strong; a
+single-reviewer finding stands only on its cited evidence. One confirmed
+critical or high finding fails the gate no matter how many PASS verdicts sit
+next to it; low findings alone never block. Do not add findings absent from the
+reports.
+
 After the verdict, if the user wants a retro or the wave taught something, write and
 archive feedback with the `orca-luna-feedback` skill. Read its log first when you
 change this skill.
