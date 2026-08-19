@@ -229,10 +229,13 @@ ROLE_REPORT_FIELDS = {
     "scout": {"shards": []},
     "implementer": {"commit": None},
     "integrator": {"integrated": [], "anchor": "", "conflicts": []},
-    "reviewer": {"verdict": "PASS", "criteria": {}},
+    "reviewer": {
+        "verdict": "<PASS|FAIL|UNKNOWN|BLOCKED>",
+        "criteria": {"<AC id>": "<evidence>"},
+    },
     "antislop": {
-        "verdict": "PASS",
-        "criteria": {},
+        "verdict": "<PASS|FAIL|UNKNOWN|BLOCKED>",
+        "criteria": {"<AC id>": "<evidence>"},
         "cuts": [],
         "leanness": 1,
     },
@@ -318,7 +321,7 @@ def string_list(
 def report_example(role: str) -> dict[str, Any]:
     common: dict[str, Any] = {
         "reportSchemaVersion": REPORT_VERSION,
-        "taskStatus": "done",
+        "taskStatus": "<done|failed|blocked>",
         "summary": "<concise material result>",
         "evidence": ["<path:line or receipt fact>"],
         "findings": [
@@ -391,48 +394,50 @@ def render_prompt(worker: dict[str, Any], envelope: dict[str, Any], mode: str) -
             "abstraction, silent fallback, speculative compatibility/generality, wrong "
             "implementation depth, reinvention, wrapper/comment slop, and wasted work."
         )
+    example = report_example(role)
+    if role in REVIEW_ROLES:
+        example["promptFeedback"] = [
+            {
+                "failureClass": "<short class>",
+                "rule": "<one imperative, checkable instruction, <=200 chars>",
+                "severity": "<critical|high|medium|low>",
+                "scopes": ["<area tag>"],
+                "gap": "<prompt|decomposition|judgment|test|tooling>",
+            }
+        ]
+        if envelope.get("knownFailureModes"):
+            example["ruleFeedback"] = [
+                {
+                    "id": "<rule id from KNOWN FAILURE MODES>",
+                    "status": "<violated|helped|retire>",
+                }
+            ]
     parts.append(
-        "REPORT\nWhen the job is finished, write the report as compact JSON "
-        "(material evidence only, <=3000 chars) to the report file named in "
-        "the RUNTIME section, with the Write tool. The report must match this "
-        "contract. Replace every <...> placeholder; use an empty array when a "
-        "category has no material items:\n" + compact_json(report_example(role))
+        "REPORT\nThe report file is your only channel to the controller. "
+        "Write it once, when the work is complete or truly blocked — never a "
+        "draft or probe. Use the Write tool: compact JSON, <=3000 chars, to "
+        "the report file named in RUNTIME. Replace every <...> placeholder; "
+        "use an empty array for a category with no material items:\n"
+        + compact_json(example)
     )
     parts.append(
-        "The report file is your only channel to the controller. Write it "
-        "once, when your work is complete or truly blocked — never as a draft "
-        "or probe. If you are blocked, set taskStatus to \"blocked\", add a "
-        "one-sentence question field, write the file, run the wake command, "
-        "and stay idle in this terminal: the controller answers into this "
-        "same session, and you then continue the task and write the final "
-        "report. Never ask questions any other way; never use "
-        "AskUserQuestion. After the final report, run the wake command from "
-        "the RUNTIME section and stop."
+        'If you are blocked: set taskStatus "blocked", add a one-sentence '
+        "question field, write the file, run the wake command, and stay idle "
+        "here; the answer arrives in this terminal — finish the task and "
+        "write the final report. Questions go only through the report file; "
+        "never use AskUserQuestion. After the final report, run the wake "
+        "command from RUNTIME and stop."
     )
     if role in {"reviewer", "antislop"}:
         parts.append(
-            'A finished review has taskStatus "done" even when the verdict is '
-            "FAIL or UNKNOWN; the verdict judges the code, not your job. "
-            "When the allowed evidence cannot prove or refute a claim, return verdict "
-            "UNKNOWN and list the exact unprovable claims in risks; never stretch an "
-            "evidence gap into PASS or into a FAIL finding without a defect."
+            'taskStatus is "done" even when the verdict is FAIL or UNKNOWN; '
+            "the verdict judges the code, not your job. When the evidence "
+            "cannot prove or refute a claim, use verdict UNKNOWN and list the "
+            "unprovable claims in risks; never turn an evidence gap into PASS "
+            "or into a FAIL finding without a defect. promptFeedback is for "
+            "failure classes a better worker prompt would have prevented; a "
+            'rule names an exact check — "be careful" is not a rule.'
         )
-        learning = (
-            "LEARNED-RULE FEEDBACK\nWhen a finding shows a failure class that a "
-            "better worker prompt would have prevented, add an optional report field "
-            'promptFeedback (max 3 entries): [{"failureClass":"<short class>",'
-            '"rule":"<one imperative, checkable instruction, <=200 chars>",'
-            '"severity":"critical|high|medium|low","scopes":["<area tags>"],'
-            '"gap":"prompt|decomposition|judgment|test|tooling"}]. '
-            '"Be careful" is not a rule; name the exact check to run.'
-        )
-        if envelope.get("knownFailureModes"):
-            learning += (
-                " For the KNOWN FAILURE MODES above, also add ruleFeedback: "
-                '[{"id":"<id in brackets>","status":"violated|helped|retire"}] '
-                "when you have evidence."
-            )
-        parts.append(learning)
     prompt = "\n\n".join(parts).strip() + "\n"
     if len(prompt) > MAX_PROMPT_CHARS:
         raise HelperError(
@@ -2646,6 +2651,25 @@ def command_finalize_wave(args: argparse.Namespace) -> int:
         if spec.get("worktree") in {"new-child", "new-top-level"}
     ]
     mechanical_ok = all(checks.values())
+    if mechanical_ok:
+        for record in workers:
+            handle = record.get("terminal_handle")
+            if not handle or record.get("stop_status") in {"stopped", "closed"}:
+                continue
+            returncode, receipt, detail = call_orca(
+                ["terminal", "close", "--terminal", handle, "--json"]
+            )
+            save_json(
+                directory / "runtime" / f"close-{record['worker_id']}.json",
+                receipt
+                if receipt is not None
+                else {"returncode": returncode, "detail": detail},
+            )
+            update_worker_state(
+                directory,
+                record["index"],
+                stop_status="closed" if returncode == 0 else "close_failed",
+            )
     set_wave_phase(directory, "finalized" if mechanical_ok else "finalize_incomplete")
     state = read_wave_state(directory)
     final = {

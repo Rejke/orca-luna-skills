@@ -112,6 +112,8 @@ def ingest_wave(directory: Path) -> dict[str, Any]:
                 continue
             if not isinstance(rule, str) or not rule.strip() or len(rule) > 200:
                 continue
+            if failure_class.lstrip().startswith("<") or rule.lstrip().startswith("<"):
+                continue
             gap = entry.get("gap", "prompt")
             if gap != "prompt":
                 if gap in GAP_KINDS:

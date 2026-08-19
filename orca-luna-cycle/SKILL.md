@@ -253,7 +253,8 @@ uv run --no-project <skill>/scripts/orca_luna_worker.py finalize-wave \
 `finalize-wave` checks: preflight passed, every worker spawned, every worker settled
 (`done` or `failed`), every report valid, no open questions, no pending wake, every
 spawn command equal to its launch spec, no ambiguous effects, and — when it can
-check this itself — that a read-only wave left `current` unchanged. It writes
+check this itself — that a read-only wave left `current` unchanged. When every
+check passes, it closes the worker terminals. It writes
 `final.json` and returns `ready_for_sol_gate` only when all of that holds. For waves
 that changed files or used several worktrees, Sol must check the integration anchor.
 

@@ -241,6 +241,33 @@ class CollectTests(unittest.TestCase):
         self.assertEqual(state["answers"], 1)
         self.assertEqual(state["notification_status"], "pending")
 
+    def test_finalize_closes_worker_terminals_when_clean(self) -> None:
+        self.write_incoming(valid_report())
+        helper.scan_incoming_reports(self.directory)
+        helper.save_json(self.directory / "preflight.json", {"status": "passed"})
+        closed = {"ok": True}
+        with (
+            patch.object(helper, "call_orca", return_value=(0, closed, "")) as orca,
+            patch.object(
+                helper,
+                "anchor_check",
+                return_value={"status": "verified", "passed": True},
+            ),
+            patch("builtins.print"),
+        ):
+            result = helper.command_finalize_wave(
+                Namespace(receipt_dir=str(self.directory))
+            )
+        self.assertEqual(result, 0)
+        close_calls = [
+            call.args[0]
+            for call in orca.call_args_list
+            if call.args[0][:2] == ["terminal", "close"]
+        ]
+        self.assertEqual(len(close_calls), 1)
+        state = helper.read_wave_state(self.directory)["workers"][0]
+        self.assertEqual(state["stop_status"], "closed")
+
     def test_runtime_prompt_names_report_file_and_wake(self) -> None:
         prompt = helper.runtime_prompt("ROLE: SCOUT\n", self.directory, self.worker_id)
         self.assertIn(
