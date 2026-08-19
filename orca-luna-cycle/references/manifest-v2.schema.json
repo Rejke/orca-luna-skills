@@ -69,7 +69,7 @@
       "properties": {
         "id": {"type": "string", "pattern": "^[a-z][a-z0-9_-]{0,39}$"},
         "role": {
-          "enum": ["scout", "implementer", "integrator", "reviewer", "antislop", "fixer"]
+          "enum": ["scout", "implementer", "integrator", "reviewer", "antislop", "planreviewer", "fixer"]
         },
         "goal": {"type": "string", "minLength": 1},
         "criteria": {
@@ -95,7 +95,7 @@
       },
       "allOf": [
         {
-          "if": {"properties": {"role": {"enum": ["reviewer", "antislop"]}}},
+          "if": {"properties": {"role": {"enum": ["reviewer", "antislop", "planreviewer"]}}},
           "then": {"properties": {"launch": {"const": "sol-xhigh"}}}
         },
         {

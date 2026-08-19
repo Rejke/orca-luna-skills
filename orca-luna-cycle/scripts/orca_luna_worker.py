@@ -46,6 +46,7 @@ ROLE_LAUNCHES = {
     "fixer": ("luna-max", "luna-fast", "fable-high"),
     "reviewer": ("sol-xhigh",),
     "antislop": ("sol-xhigh",),
+    "planreviewer": ("sol-xhigh",),
 }
 MAX_WORKERS = 10
 MAX_PROMPT_CHARS = 16_000
@@ -63,7 +64,7 @@ SKILL_ROOT = Path(__file__).resolve().parents[1]
 REFERENCES = SKILL_ROOT / "references"
 MODES = {"implementation", "audit", "benchmark"}
 MUTATOR_ROLES = {"implementer", "integrator", "fixer"}
-REVIEW_ROLES = {"reviewer", "antislop"}
+REVIEW_ROLES = {"reviewer", "antislop", "planreviewer"}
 # v2 dispatch runs on plain Orca terminals and worktrees; the orchestration
 # layer (runs, tasks, dispatches, mail) is not used. Workers get their prompt
 # from a file, write their report to a file, and ping Sol with the wake hook.
@@ -226,6 +227,36 @@ ROLE_RULES = {
         "the smallest diff, preserve unrelated changes, and rerun relevant checks. Do not "
         "weaken tests/types/lint or add fallback behavior to hide failures."
     ),
+    # Adapted from 1F47E/rival PlanReviewPrompt and AntislopPlanPrompt.
+    "planreviewer": (
+        "Read only; review a plan or wave manifest, not code. Find the real "
+        "problems that would make the plan fail, mislead an implementer, or "
+        "ship the wrong thing — and the work that should not be built at all:\n"
+        "1. Bugs and logic flaws — steps that are wrong, contradictory, out of "
+        "order, or that break when implemented as written. A criterion that "
+        "demands a state the referenced schemas or validators forbid is a bug; "
+        "name the exact contract it collides with.\n"
+        "2. Gaps — missing steps, unhandled edge cases, undefined error and "
+        "failure behavior, absent rollback or validation, things the plan "
+        "silently assumes.\n"
+        "3. Ambiguity — instructions vague enough that two engineers would "
+        "build different things; unstated assumptions; undefined terms. "
+        "Propose the one intended reading.\n"
+        "4. Scope and feasibility — unrealistic claims, hidden dependencies, "
+        "under-estimated work, parts that conflict with the rest of the "
+        "system as described.\n"
+        "5. Verification gaps — no way to tell the plan succeeded: criteria "
+        "with no testable form, missing tests or acceptance checks, commit "
+        "ranges or files with no owner.\n"
+        "6. Cuts — scope creep and YAGNI, gold-plating, compat paths with no "
+        "named consumer, reinvention of an existing module or library, the "
+        "same mechanism designed twice, and ceremony sections the work's size "
+        "does not warrant. Name the cut, merge, deferral, or replacement.\n"
+        "Report only issues you are confident are real; no wording nitpicks. "
+        "Every finding cites the exact criterion or section. A solid plan "
+        "gets PASS with few or zero findings; do not invent problems. Sol "
+        "issues the final verdict from your report."
+    ),
 }
 
 ROLE_REPORT_FIELDS = {
@@ -243,6 +274,10 @@ ROLE_REPORT_FIELDS = {
         "leanness": 1,
     },
     "fixer": {"fixed": [], "commit": None},
+    "planreviewer": {
+        "verdict": "<PASS|FAIL|UNKNOWN|BLOCKED>",
+        "criteria": {"<AC id>": "<evidence>"},
+    },
 }
 
 
@@ -431,7 +466,7 @@ def render_prompt(worker: dict[str, Any], envelope: dict[str, Any], mode: str) -
         "never use AskUserQuestion. After the final report, run the wake "
         "command from RUNTIME and stop."
     )
-    if role in {"reviewer", "antislop"}:
+    if role in REVIEW_ROLES:
         parts.append(
             'taskStatus is "done" even when the verdict is FAIL or UNKNOWN; '
             "the verdict judges the code, not your job. When the evidence "
@@ -1529,6 +1564,44 @@ def command_prompt(args: argparse.Namespace) -> int:
     else:
         index = 0
     print(prompts[index], end="")
+    return 0
+
+
+def command_plan_brief(args: argparse.Namespace) -> int:
+    """Print only the authored plan content; mechanical fields stay out."""
+    manifest, _, _ = validate_manifest(load_json(args.manifest))
+    envelope = manifest["envelope"]
+    parts = [
+        f"OBJECTIVE\n{manifest['objective']}",
+        f"GOAL\n{envelope['goal']}",
+    ]
+    for key, label in (
+        ("nonGoals", "NON-GOALS"),
+        ("acceptanceCriteria", "ACCEPTANCE"),
+        ("constraints", "CONSTRAINTS"),
+        ("reviewOverride", "REVIEW OVERRIDE"),
+        ("knownFailureModes", "KNOWN FAILURE MODES"),
+    ):
+        if envelope.get(key) not in (None, "", [], {}):
+            parts.append(f"{label}\n{render_value(envelope[key])}")
+    for worker in manifest["workers"]:
+        lines = [f"WORKER {worker['id']} ({worker['role']})"]
+        for key in (
+            "goal",
+            "criteria",
+            "scope",
+            "ownership",
+            "lens",
+            "context",
+            "constraints",
+            "checks",
+            "findings",
+            "handoffs",
+        ):
+            if worker.get(key) not in (None, "", [], {}):
+                lines.append(f"{key}: {render_value(worker[key])}")
+        parts.append("\n".join(lines))
+    print("\n\n".join(parts))
     return 0
 
 
@@ -2741,6 +2814,8 @@ def command_self_test(_: argparse.Namespace) -> int:
     assert all("[" not in spec["model"] for spec in LAUNCH_SPECS.values())
     assert ROLE_LAUNCHES["reviewer"] == ("sol-xhigh",)
     assert ROLE_LAUNCHES["antislop"] == ("sol-xhigh",)
+    assert ROLE_LAUNCHES["planreviewer"] == ("sol-xhigh",)
+    assert "planreviewer" in REVIEW_ROLES
     assert "luna-fast" in ROLE_LAUNCHES["implementer"]
     assert all(launches[0] != "luna-fast" for launches in ROLE_LAUNCHES.values())
     assert not any(name.startswith("orchestration") for name in REQUIRED_ORCA_COMMANDS)
@@ -2975,6 +3050,14 @@ def command_self_test(_: argparse.Namespace) -> int:
     assert "Library reinvention" in antislop_prompts[0]
     assert "Backward-compat hoarding" in antislop_prompts[0]
     assert "Do not invent problems" in antislop_prompts[0]
+    plan_variant = {**reviewer_variant, "id": "plan", "role": "planreviewer"}
+    _, plan_workers, plan_prompts = validate_manifest(
+        {**manifest, "workers": [plan_variant]}
+    )
+    assert plan_workers[0]["launch"] == "sol-xhigh"
+    assert "mislead an implementer" in plan_prompts[0]
+    assert "Verification gaps" in plan_prompts[0]
+    assert "scope creep and YAGNI" in plan_prompts[0]
     try:
         validate_manifest(
             {
@@ -3036,6 +3119,12 @@ def parser() -> argparse.ArgumentParser:
     prompt.add_argument("--manifest", type=Path, required=True)
     prompt.add_argument("--worker", help="worker ID; defaults to the first worker")
     prompt.set_defaults(func=command_prompt)
+
+    brief = commands.add_parser(
+        "plan-brief", help="print the authored plan content for a planreviewer"
+    )
+    brief.add_argument("--manifest", type=Path, required=True)
+    brief.set_defaults(func=command_plan_brief)
 
     preflight = commands.add_parser(
         "preflight", help="validate runtime/contract/model/worktrees without mutations"

@@ -81,8 +81,8 @@ values and spawns each agent with that exact command:
 - `fable-high` — claude `claude-fable-5`. Use it for frontend UI work (components,
   layout, styling, interaction). Valid for the same roles as `luna-max`.
 - `sol-xhigh` — codex `gpt-5.6-sol` at `model_reasoning_effort=xhigh`. Fixed for
-  every reviewer and anti-slop worker. No override. All review runs on Sol, never on
-  Luna.
+  every reviewer, anti-slop, and plan-review worker. No override. All review runs on
+  Sol, never on Luna.
 
 Preflight checks codex specs against the Codex model catalog. It also checks that the
 `claude` executable (set `ORCA_LUNA_CLAUDE_COMMAND` to override) and `uv` are on
@@ -126,7 +126,15 @@ uv run --no-project <skill>/scripts/orca_luna_worker.py prompt \
   --manifest /tmp/<wave>.json --worker <worker-id>
 ```
 
-Roles are `scout`, `implementer`, `integrator`, `reviewer`, `antislop`, and `fixer`.
+Roles are `scout`, `implementer`, `integrator`, `reviewer`, `antislop`,
+`planreviewer`, and `fixer`.
+
+Before dispatching mutators on a new or complex envelope, run one audit wave
+first: print the authored plan with `plan-brief --manifest <wave>.json` into a
+file, and give a single `planreviewer` that file (plus any spec documents) as its
+scope. Mechanical manifest fields stay out of the brief; the helper validates
+them. Fix the envelope from the findings, then dispatch. Skip this for small
+waves with proven criteria.
 The optional `launch` field picks a spec from the Launch policy; review roles reject
 overrides. In a review wave, give every commit range between the reviewed diff and
 `baseAnchor` to a named reviewer. Use `displayName` for a short
