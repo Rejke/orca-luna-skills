@@ -136,10 +136,18 @@ angles, and the plan categories. The manifest adds only lens, scope, and criteri
 — do not copy charter text into the manifest.
 
 Before dispatching mutators on a new or complex envelope, run one audit wave
-first: print the authored plan with `plan-brief --manifest <wave>.json` into a
-file, and give a single `planreviewer` that file (plus any spec documents) as its
-scope. Fix the envelope from the findings, then dispatch. Skip this for small
-waves with proven criteria.
+first. Print the authored plan with `plan-brief --manifest <wave>.json` into a
+file, then generate the review wave — do not author it. The plan-review mission
+and ACs are fixed in the helper; the controller hands over only the artifact:
+
+```text
+uv run --no-project <skill>/scripts/orca_luna_worker.py plan-review-manifest \
+  --plan /tmp/<plan>.md [--prior <report>.json] [--hint "..."] > /tmp/<wave>.json
+```
+
+A `--hint` goes into worker context: it widens the reviewer's search and never
+defines acceptance. Fix the plan from the findings, then dispatch. Skip this for
+small waves with proven criteria.
 
 Print the JSON Schema and a valid example; do not read the helper source:
 

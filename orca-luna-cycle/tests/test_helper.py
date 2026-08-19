@@ -617,6 +617,54 @@ class AnchorBaselineTests(unittest.TestCase):
         self.assertTrue(result["passed"])
 
 
+class PlanReviewManifestTests(unittest.TestCase):
+    def test_generated_manifest_validates_with_fixed_acs(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="orca-luna-planrev-") as name:
+            plan = Path(name) / "plan.md"
+            plan.write_text("# Plan\nDo the thing.\n", encoding="utf-8")
+            prior = Path(name) / "prior.json"
+            prior.write_text("{}", encoding="utf-8")
+            printed: list[str] = []
+            with patch("builtins.print", side_effect=lambda *a, **k: printed.append(a[0])):
+                code = helper.command_plan_review_manifest(
+                    Namespace(
+                        plan=str(plan),
+                        prior=[str(prior)],
+                        hint=["check the migration mapping"],
+                        worker_id="plan_reviewer",
+                    )
+                )
+            self.assertEqual(code, 0)
+            manifest = json.loads(printed[0])
+            _, workers, _ = helper.validate_manifest(manifest)
+            worker = workers[0]
+            self.assertEqual(worker["role"], "planreviewer")
+            self.assertEqual(worker["launch"], "sol-xhigh")
+            self.assertIn(str(plan.resolve()), worker["scope"])
+            self.assertIn("AC3", worker["criteria"])
+            self.assertEqual(
+                manifest["envelope"]["goal"], helper.PLAN_REVIEW_MISSION
+            )
+            self.assertEqual(
+                worker["context"],
+                "Hints, not acceptance: check the migration mapping",
+            )
+
+    def test_no_priors_drops_the_prior_criterion(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="orca-luna-planrev-") as name:
+            plan = Path(name) / "plan.md"
+            plan.write_text("# Plan\n", encoding="utf-8")
+            printed: list[str] = []
+            with patch("builtins.print", side_effect=lambda *a, **k: printed.append(a[0])):
+                helper.command_plan_review_manifest(
+                    Namespace(
+                        plan=str(plan), prior=None, hint=None, worker_id="plan_reviewer"
+                    )
+                )
+            manifest = json.loads(printed[0])
+            self.assertNotIn("AC3", manifest["envelope"]["acceptanceCriteria"])
+
+
 class UsageTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory(prefix="orca-luna-usage-")

@@ -268,6 +268,9 @@ ROLE_RULES = {
         "named consumer, reinvention of an existing module or library, the "
         "same mechanism designed twice, and ceremony sections the work's size "
         "does not warrant. Name the cut, merge, deferral, or replacement.\n"
+        "Derive your own checklist from the plan itself before reading any "
+        "hints; scope is a floor, not a ceiling — a topic the plan implies but "
+        "the materials omit is a finding, not out of bounds. "
         "Report only issues you are confident are real; no wording nitpicks. "
         "Every finding cites the exact criterion or section. Do not ask the "
         "controller what the plan means: an ambiguity you would ask about is "
@@ -1627,6 +1630,81 @@ def command_prompt(args: argparse.Namespace) -> int:
     else:
         index = 0
     print(prompts[index], end="")
+    return 0
+
+
+PLAN_REVIEW_MISSION = (
+    "Review the attached plan as written; find what would make it fail, "
+    "mislead an implementer, or ship the wrong thing."
+)
+PLAN_REVIEW_ACS = {
+    "AC1": (
+        "Every finding cites the exact plan section and the concrete repository "
+        "contract, path, or test entrypoint it conflicts with."
+    ),
+    "AC2": (
+        "Coverage comes from the plan itself: every step, criterion, and named "
+        "file is checked, plus what the plan implies but omits."
+    ),
+    "AC3": (
+        "Each prior finding is confirmed closed at root cause or cited as an "
+        "open blocker."
+    ),
+    "AC4": (
+        "The review is read-only and leaves the worktree and running services "
+        "unchanged."
+    ),
+}
+
+
+def command_plan_review_manifest(args: argparse.Namespace) -> int:
+    """Emit a complete plan-review wave manifest; the mission and ACs are fixed.
+
+    The controller hands over only the artifact under review. Anything it wants
+    to highlight goes into worker context via --hint; hints widen the search,
+    they never define acceptance.
+    """
+    plan = Path(args.plan).resolve()
+    if not plan.is_file():
+        raise HelperError(f"plan file not found: {plan}")
+    priors = [str(Path(prior).resolve()) for prior in args.prior or []]
+    for prior in priors:
+        if not Path(prior).is_file():
+            raise HelperError(f"prior report not found: {prior}")
+    criteria = ["AC1", "AC2"] + (["AC3"] if priors else []) + ["AC4"]
+    worker: dict[str, Any] = {
+        "id": args.worker_id,
+        "role": "planreviewer",
+        "displayName": "plan review",
+        "goal": "Apply the plan-review charter to the plan file in scope.",
+        "criteria": criteria,
+        "scope": [str(plan), *priors],
+        "launch": "sol-xhigh",
+    }
+    if args.hint:
+        worker["context"] = "Hints, not acceptance: " + "; ".join(args.hint)
+    manifest = {
+        "schemaVersion": 2,
+        "mode": "audit",
+        "objective": f"Independent review of the plan {plan.name}.",
+        "envelope": {
+            "goal": PLAN_REVIEW_MISSION,
+            "acceptanceCriteria": {
+                key: PLAN_REVIEW_ACS[key] for key in criteria
+            },
+            "constraints": [
+                "Read the plan, the prior reports, and any repository files the "
+                "review needs; modify nothing.",
+                "Return PASS only if an implementer can execute the plan without "
+                "inventing missing semantics.",
+            ],
+            "repairBudget": 0,
+        },
+        "defaults": {"worktree": "current", "mutation": "forbidden"},
+        "workers": [worker],
+    }
+    validate_manifest(manifest)
+    print(json.dumps(manifest, ensure_ascii=False, indent=2))
     return 0
 
 
@@ -3751,6 +3829,24 @@ def parser() -> argparse.ArgumentParser:
     )
     brief.add_argument("--manifest", type=Path, required=True)
     brief.set_defaults(func=command_plan_brief)
+
+    plan_review = commands.add_parser(
+        "plan-review-manifest",
+        help="emit a plan-review wave manifest with the fixed mission and ACs",
+    )
+    plan_review.add_argument("--plan", required=True, help="plan file under review")
+    plan_review.add_argument(
+        "--prior",
+        action="append",
+        help="prior review report to re-check; repeatable",
+    )
+    plan_review.add_argument(
+        "--hint",
+        action="append",
+        help="optional focus hint for worker context; never an AC; repeatable",
+    )
+    plan_review.add_argument("--worker-id", default="plan_reviewer")
+    plan_review.set_defaults(func=command_plan_review_manifest)
 
     preflight = commands.add_parser(
         "preflight", help="validate runtime/contract/model/worktrees without mutations"
