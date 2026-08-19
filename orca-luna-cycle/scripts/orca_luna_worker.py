@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Render compact Luna task prompts and dispatch Orca worker waves."""
+"""Render compact Luna task prompts and dispatch Orca worker waves.
+
+GENERATED FILE - do not edit directly. Source lives in scripts/parts/*.py;
+rebuild with: python3 scripts/build_helper.py
+"""
 
 from __future__ import annotations
 
@@ -25,6 +29,7 @@ try:
 except ImportError:  # pragma: no cover - Windows fallback keeps atomic writes.
     fcntl = None
 
+# ==== part: 10_launch.py ====
 
 LAUNCH_SPECS = {
     "luna-max": {"agent": "codex", "model": "gpt-5.6-luna", "effort": "max"},
@@ -148,6 +153,7 @@ WORKER_FIELDS = {
     "setup",
 }
 
+# ==== part: 20_charters.py ====
 ROLE_RULES = {
     "scout": (
         "Read only. Answer the bounded question with repository evidence. Propose disjoint "
@@ -318,6 +324,7 @@ ROLE_REPORT_FIELDS = {
 }
 
 
+# ==== part: 30_render.py ====
 class HelperError(RuntimeError):
     pass
 
@@ -565,6 +572,7 @@ def runtime_prompt(prompt: str, directory: Path, worker_id: str) -> str:
     return rendered
 
 
+# ==== part: 40_manifest.py ====
 def load_json(path: Path) -> Any:
     try:
         return json.loads(path.read_text(encoding="utf-8"))
@@ -877,6 +885,7 @@ def validate_manifest(
     return normalized_manifest, normalized_workers, prompts
 
 
+# ==== part: 50_orca.py ====
 def resolve_orca() -> list[str]:
     configured = os.environ.get("ORCA_CLI_COMMAND", "").strip()
     if configured:
@@ -972,6 +981,7 @@ def find_terminal_handle(value: Any) -> str | None:
     return None
 
 
+# ==== part: 60_journal.py ====
 def receipt_dir(requested: str | None) -> Path:
     if not requested:
         raise HelperError(
@@ -1152,6 +1162,7 @@ def ensure_journal(directory: Path) -> None:
         (directory / name).mkdir(parents=True, exist_ok=True)
 
 
+# ==== part: 70_preflight.py ====
 def version_key(version: str) -> tuple[int, ...]:
     numbers = [int(item) for item in re.findall(r"[0-9]+", version)]
     return tuple((numbers + [0, 0, 0, 0])[:4])
@@ -1707,6 +1718,7 @@ def command_prompt(args: argparse.Namespace) -> int:
     return 0
 
 
+# ==== part: 75_planreview.py ====
 PLAN_REVIEW_MISSION = (
     "Review the attached plan as written; find what would make it fail, "
     "mislead an implementer, or ship the wrong thing."
@@ -1828,6 +1840,7 @@ def command_schema(args: argparse.Namespace) -> int:
     return 0
 
 
+# ==== part: 80_usage.py ====
 def wave_records(state: dict[str, Any]) -> list[dict[str, Any]]:
     keys = (
         "index",
@@ -2223,6 +2236,7 @@ def command_usage(args: argparse.Namespace) -> int:
     return 0
 
 
+# ==== part: 85_dispatch.py ====
 def has_material_effects(value: Any) -> bool:
     if value in (None, {}, []):
         return False
@@ -2471,6 +2485,7 @@ def spawn_pending_workers(directory: Path, workers: list[dict[str, Any]]) -> Non
         )
 
 
+# ==== part: 90_lifecycle.py ====
 def terminal_gone(receipt: Any, detail: str) -> bool:
     blob = ((detail or "") + (compact_json(receipt) if receipt is not None else "")).lower()
     return "not_found" in blob or "not found" in blob or "unknown terminal" in blob
@@ -2698,6 +2713,7 @@ def command_stop_wave(args: argparse.Namespace) -> int:
     return 0
 
 
+# ==== part: 92_reports.py ====
 MAX_REPORT_FILE_BYTES = 262_144
 
 
@@ -3184,6 +3200,7 @@ def clear_notification(directory: Path) -> bool:
     return True
 
 
+# ==== part: 94_notify.py ====
 STALE_WAKE_SECONDS = 600
 
 
@@ -3428,6 +3445,7 @@ def command_rebind_controller(args: argparse.Namespace) -> int:
     return 0
 
 
+# ==== part: 96_finalize.py ====
 def exact_launch_proven(record: dict[str, Any]) -> bool:
     """The helper spawned the agent itself, so the recorded spawn command is
     the primary launch proof; the boot banner is secondary evidence only."""
@@ -3654,6 +3672,7 @@ def command_finalize_wave(args: argparse.Namespace) -> int:
     return 0 if mechanical_ok else 2
 
 
+# ==== part: 98_selftest.py ====
 def command_self_test(_: argparse.Namespace) -> int:
     assert LAUNCH_SPECS["luna-max"] == {
         "agent": "codex",
@@ -3951,6 +3970,22 @@ def command_self_test(_: argparse.Namespace) -> int:
         request_cancel(directory)
         assert cancel_requested(directory)
         assert read_wave_state(directory)["cancel_requested"] is True
+    # Source of truth is scripts/parts/; the single-file bundle is generated.
+    # Archived per-wave copies run without parts/ and skip this check.
+    parts_dir = Path(__file__).resolve().parent / "parts"
+    if parts_dir.is_dir():
+        pieces: list[str] = []
+        for part in sorted(parts_dir.glob("*.py")):
+            text = part.read_text(encoding="utf-8")
+            if not text.endswith("\n"):
+                text += "\n"
+            if pieces:
+                pieces.append(f"# ==== part: {part.name} ====\n")
+            pieces.append(text)
+        if "".join(pieces) != Path(__file__).read_text(encoding="utf-8"):
+            raise AssertionError(
+                "bundle differs from parts/; run scripts/build_helper.py"
+            )
     print(
         compact_json(
             {
@@ -3963,6 +3998,7 @@ def command_self_test(_: argparse.Namespace) -> int:
     return 0
 
 
+# ==== part: 99_cli.py ====
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(description=__doc__)
     commands = root.add_subparsers(dest="command", required=True)

@@ -118,10 +118,10 @@ Writing rules:
 Size the shards to the AC list. A shard is one atomic commit's worth of work:
 if honestly splitting its criteria produces more than roughly five ACs, the
 shard is a phase pretending to be a worker — cut it into sequential waves
-instead of handing one worker a subsystem. The integrator's `criteria` list its
-own contract only (composition, disjoint consumption, cross-shard checks);
-never assign producer ACs to the integrator — a producer's failure is repaired
-in a producer wave, not judged twice.
+instead of handing one worker a subsystem. The integrator's `criteria` lists its
+own contract only: composition, disjoint consumption, cross-shard checks. Never
+assign producer ACs to the integrator — a producer's failure is repaired in a
+producer wave, not judged twice.
 
 Create the manifest and the receipt directory outside the repository. Put shared
 facts once into `envelope`: goal, non-goals, `AC<number>` definitions, constraints,
@@ -134,16 +134,16 @@ does not equal the measured HEAD. Each worker lists AC IDs; it does
 not copy their text. Optional `knownFailureModes` holds learned rules from
 the feedback skill's `rules` command; the helper enforces the size caps and renders
 them as a KNOWN FAILURE MODES section. Put a rule in `envelope.knownFailureModes`
-only when it applies to every worker; a rule scoped to one shard goes into that
+only when it applies to every worker. A rule scoped to one shard goes into that
 worker's own `knownFailureModes` field, which replaces the envelope list for that
-worker — an irrelevant rule in a prompt is noise that dilutes the relevant ones. The helper rejects unknown fields, duplicate
-worker IDs or worktree names, unknown ACs, unsafe shared mutators, and wrong modes
-before it touches Orca.
+worker — an irrelevant rule in a prompt is noise that dilutes the relevant ones.
+
+The helper rejects unknown fields, duplicate worker IDs or worktree names,
+unknown ACs, unsafe shared mutators, and wrong modes before it touches Orca.
 
 Keep the manifest lean. The rendered prompt already carries the role charter, the
 report contract, the verdict rules, and the learning arrays — do not restate any
-of them in acceptance criteria, constraints, or checks. One acceptance criterion
-is one testable statement, not a paragraph. To protect earlier work, write one
+of them in acceptance criteria, constraints, or checks. To protect earlier work, write one
 line — "Preserve all behavior accepted at <reviewedAnchor>" — instead of listing
 past wins. FINDINGS is the canonical list: refer to findings by number ("AC1:
 finding 1 is root-cause fixed with a production-entrypoint regression test"), and
@@ -296,9 +296,9 @@ wake. Never run collect again just because nothing arrived.
 
 The wake is a doorbell, not the contract: the report file on disk is the durable
 truth, and a wake can drown in a busy controller TUI or land in a stale
-terminal. The worker verifies delivery by reading this terminal for the banner
-and retries once; `send_unverified` in the wave state means exactly that
-happened. So when no wake has arrived for far longer than the task should take,
+terminal. The worker reads the controller terminal for the banner to verify
+delivery and retries once; `send_unverified` in the wave state means both
+attempts went unproven. So when no wake has arrived for far longer than the task should take,
 run `status --receipt-dir` once: it shows `newReport` for workers whose report
 file already exists, and it marks workers whose terminal sits idle without one.
 Collect the former; re-engage the latter with `terminal send` or stop the wave.
@@ -422,9 +422,16 @@ After the verdict, if the user wants a retro or the wave taught something, write
 archive feedback with the `orca-luna-feedback` skill. Read its log first when you
 change this skill.
 
-After changing this skill, run:
+## Maintain the helper
+
+`scripts/orca_luna_worker.py` is generated. Edit the source in
+`scripts/parts/*.py`, then rebuild the single-file bundle and run the checks:
 
 ```text
+python3 <skill>/scripts/build_helper.py
 uv run --no-project <skill>/scripts/orca_luna_worker.py self-test
 uv run --no-project <skill>/tests/test_helper.py
 ```
+
+Self-test fails when the bundle and `parts/` differ. The bundle must stay one
+file: every wave archives it into its receipts and pins its SHA-256.

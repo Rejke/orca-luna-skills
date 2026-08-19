@@ -707,6 +707,24 @@ class WorkerFailureModeTests(unittest.TestCase):
             helper.validate_manifest(manifest)
 
 
+class BundleTests(unittest.TestCase):
+    def test_bundle_matches_parts(self) -> None:
+        scripts = HELPER_PATH.parent
+        pieces: list[str] = []
+        for part in sorted((scripts / "parts").glob("*.py")):
+            text = part.read_text(encoding="utf-8")
+            if not text.endswith("\n"):
+                text += "\n"
+            if pieces:
+                pieces.append(f"# ==== part: {part.name} ====\n")
+            pieces.append(text)
+        self.assertEqual(
+            "".join(pieces),
+            HELPER_PATH.read_text(encoding="utf-8"),
+            "bundle differs from parts/; run scripts/build_helper.py",
+        )
+
+
 class PlanReviewManifestTests(unittest.TestCase):
     def test_generated_manifest_validates_with_fixed_acs(self) -> None:
         with tempfile.TemporaryDirectory(prefix="orca-luna-planrev-") as name:
