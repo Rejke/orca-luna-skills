@@ -138,6 +138,7 @@ WORKER_FIELDS = {
     "findings",
     "handoffs",
     "lens",
+    "knownFailureModes",
     "launch",
     "worktree",
     "name",
@@ -156,6 +157,8 @@ ROLE_RULES = {
         "Own only the declared shard. Inspect surrounding code first; make the smallest "
         "coherent diff. Reuse existing mechanisms, keep failures explicit, avoid speculative "
         "abstractions/compatibility, and run the required checks. Preserve unrelated changes. "
+        "Committed code and tests never reference paths outside the repository; copy an "
+        "ephemeral input into the repo or a fixture instead. "
         "When your code must match an existing module's behavior, call that module in your "
         "tests as the oracle; never assert your implementation against itself. "
         "Before you report, reread the actual diff, not your memory of it. For each changed "
@@ -238,7 +241,8 @@ ROLE_RULES = {
     "fixer": (
         "Own only the declared findings. Reproduce them when practical, fix root causes with "
         "the smallest diff, preserve unrelated changes, and rerun relevant checks. Do not "
-        "weaken tests/types/lint or add fallback behavior to hide failures. When a "
+        "weaken tests/types/lint or add fallback behavior to hide failures. Committed "
+        "code and tests never reference paths outside the repository. When a "
         "regression test guards behavior that must match an existing module, call that "
         "module in the test as the oracle. Before you report, reread the actual fix diff "
         "and construct one concrete counterexample against each changed behavior — a fix "
@@ -264,7 +268,9 @@ ROLE_RULES = {
         "system as described.\n"
         "5. Verification gaps — no way to tell the plan succeeded: criteria "
         "with no testable form, missing tests or acceptance checks, commit "
-        "ranges or files with no owner.\n"
+        "ranges or files with no owner. A criterion that bundles several "
+        "independently checkable claims is a finding: one of them can fail "
+        "while the rest pass, so no single verdict fits — name the split.\n"
         "6. Mission fit — the goal states the product mission; a criterion "
         "that does not serve it is scope creep, and a part of the mission no "
         "criterion covers is a gap. A goal that names no user-facing outcome "
@@ -450,11 +456,14 @@ def render_prompt(worker: dict[str, Any], envelope: dict[str, Any], mode: str) -
     }
     if state:
         parts.append(f"STATE\n{render_value(state)}")
-    if envelope.get("knownFailureModes"):
+    failure_modes = worker.get("knownFailureModes") or envelope.get(
+        "knownFailureModes"
+    )
+    if failure_modes:
         parts.append(
-            "KNOWN FAILURE MODES RELEVANT TO THIS SCOPE\n"
-            "Follow each rule; it applies to your scope:\n"
-            + "\n".join(f"- {rule}" for rule in envelope["knownFailureModes"])
+            "KNOWN FAILURE MODES\n"
+            "Learned rules from earlier waves; follow each one:\n"
+            + "\n".join(f"- {rule}" for rule in failure_modes)
         )
     parts.append(f"RULES\n{ROLE_RULES[role]}")
     lens = str(worker.get("lens", "")).lower()
@@ -475,7 +484,7 @@ def render_prompt(worker: dict[str, Any], envelope: dict[str, Any], mode: str) -
                 "gap": "<prompt|decomposition|judgment|test|tooling>",
             }
         ]
-        if envelope.get("knownFailureModes"):
+        if failure_modes:
             example["ruleFeedback"] = [
                 {
                     "id": "<rule id from KNOWN FAILURE MODES>",
@@ -637,6 +646,19 @@ def validate_manifest(
             f"{MAX_KNOWN_FAILURE_MODES_TOTAL} characters"
         )
 
+    def validated_failure_modes(value: Any, label: str) -> list[str]:
+        rules = string_list(value, label)
+        if len(rules) > MAX_KNOWN_FAILURE_MODES:
+            raise HelperError(
+                f"{label} allows at most {MAX_KNOWN_FAILURE_MODES} rules"
+            )
+        if any(len(rule) > MAX_KNOWN_FAILURE_MODE_CHARS for rule in rules):
+            raise HelperError(
+                f"each rule in {label} must be at most "
+                f"{MAX_KNOWN_FAILURE_MODE_CHARS} characters"
+            )
+        return rules
+
     defaults = require_object(
         manifest.get("defaults", {}), "manifest.defaults", DEFAULT_FIELDS
     )
@@ -762,6 +784,11 @@ def validate_manifest(
         for field in ("findings", "handoffs"):
             if field in worker and not isinstance(worker[field], list):
                 raise HelperError(f"workers[{index}].{field} must be an array")
+        if "knownFailureModes" in worker:
+            normalized_worker["knownFailureModes"] = validated_failure_modes(
+                worker["knownFailureModes"],
+                f"workers[{index}].knownFailureModes",
+            )
         if name is not None:
             normalized_worker["name"] = name
         if base_branch is not None:

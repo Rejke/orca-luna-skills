@@ -451,7 +451,7 @@ class LearnedRuleTests(unittest.TestCase):
             },
         }
         _, _, prompts = helper.validate_manifest(manifest)
-        self.assertIn("KNOWN FAILURE MODES RELEVANT TO THIS SCOPE", prompts[0])
+        self.assertIn("KNOWN FAILURE MODES", prompts[0])
         self.assertIn("[producer-proxy]", prompts[0])
 
     def test_known_failure_modes_caps_are_enforced(self) -> None:
@@ -676,6 +676,35 @@ class AnchorBaselineTests(unittest.TestCase):
         with patch.object(helper, "git_snapshot", return_value=snapshot):
             result = helper.anchor_check(self.directory, manifest, self.state)
         self.assertTrue(result["passed"])
+
+
+class WorkerFailureModeTests(unittest.TestCase):
+    def base_manifest(self) -> dict:
+        return json.loads(
+            json.dumps(
+                helper.load_json(
+                    HELPER_PATH.parents[1]
+                    / "references"
+                    / "manifest-v2.example.json"
+                )
+            )
+        )
+
+    def test_worker_rules_replace_envelope_rules_in_the_prompt(self) -> None:
+        manifest = self.base_manifest()
+        manifest["envelope"]["knownFailureModes"] = ["[global] envelope rule"]
+        manifest["workers"][0]["knownFailureModes"] = ["[local] worker rule"]
+        _, workers, prompts = helper.validate_manifest(manifest)
+        self.assertIn("[local] worker rule", prompts[0])
+        self.assertNotIn("[global] envelope rule", prompts[0])
+        for prompt in prompts[1:]:
+            self.assertIn("[global] envelope rule", prompt)
+
+    def test_worker_rules_share_the_size_caps(self) -> None:
+        manifest = self.base_manifest()
+        manifest["workers"][0]["knownFailureModes"] = ["x" * 241]
+        with self.assertRaises(helper.HelperError):
+            helper.validate_manifest(manifest)
 
 
 class PlanReviewManifestTests(unittest.TestCase):

@@ -90,14 +90,38 @@ PATH.
 
 ## Build manifest v2
 
-The plan has two floors. `envelope.goal` is the product mission: the user-facing
-outcome and who it serves — it renders as MISSION in every worker prompt.
-Acceptance criteria are the technical contract derived from that mission. Example:
-goal "A server admin sees what an update changes and whether it breaks their
-setup" → AC1 "diffCatalogs returns servers added/removed and per-server build
-changes with a breaking flag". A criterion you cannot trace to the mission is
-scope creep; a part of the mission no criterion covers is a gap — the
-planreviewer checks both.
+The plan has two floors. `envelope.goal` is the product mission: who the user
+is and what outcome they get — it renders as MISSION in every worker prompt.
+Write it as one sentence in user-story shape ("A server admin sees what an
+update changes and whether it breaks their setup"), never as an implementation
+summary ("Migrate the catalog module to v2" names no user and no outcome).
+
+Acceptance criteria are the technical contract derived from that mission.
+Writing rules:
+
+- **One AC states one falsifiable claim.** The test: could one half fail while
+  the other half passes? Then it is two ACs. "diffCatalogs returns servers
+  added/removed with a breaking flag" is one AC. "Schema and cutover cover all
+  entities, orders, reconciliation, journals, aborts, and rollback" is six or
+  more — a reviewer cannot map evidence to it, a fixer cannot prove it closed,
+  and one weak corner fails the whole criterion forever.
+- **Name the observable, not the effort.** An AC says what a command, test,
+  route, or diff shows — never "properly", "robust", "complete", or "covers".
+  Numbers beat adjectives: "all 11 auth routes return the ledger's exact error
+  bodies" is checkable; "auth is production-ready" is not.
+- **Trace both directions.** A criterion you cannot trace to the mission is
+  scope creep; a part of the mission no criterion covers is a gap — the
+  planreviewer checks both.
+- **Each AC has one accountable worker.** An AC no worker lists, or that needs
+  two workers to pass, is a decomposition bug.
+
+Size the shards to the AC list. A shard is one atomic commit's worth of work:
+if honestly splitting its criteria produces more than roughly five ACs, the
+shard is a phase pretending to be a worker — cut it into sequential waves
+instead of handing one worker a subsystem. The integrator's `criteria` list its
+own contract only (composition, disjoint consumption, cross-shard checks);
+never assign producer ACs to the integrator — a producer's failure is repaired
+in a producer wave, not judged twice.
 
 Create the manifest and the receipt directory outside the repository. Put shared
 facts once into `envelope`: goal, non-goals, `AC<number>` definitions, constraints,
@@ -107,9 +131,12 @@ the manifest: preflight measures HEAD and the dirty state itself and stores them
 as `gitBaseline` in `preflight.json`; finalize compares that measurement to the
 end state. `baseAnchor` is optional — when present, preflight fails fast if it
 does not equal the measured HEAD. Each worker lists AC IDs; it does
-not copy their text. Optional `envelope.knownFailureModes` holds learned rules from
+not copy their text. Optional `knownFailureModes` holds learned rules from
 the feedback skill's `rules` command; the helper enforces the size caps and renders
-them as a KNOWN FAILURE MODES section. The helper rejects unknown fields, duplicate
+them as a KNOWN FAILURE MODES section. Put a rule in `envelope.knownFailureModes`
+only when it applies to every worker; a rule scoped to one shard goes into that
+worker's own `knownFailureModes` field, which replaces the envelope list for that
+worker — an irrelevant rule in a prompt is noise that dilutes the relevant ones. The helper rejects unknown fields, duplicate
 worker IDs or worktree names, unknown ACs, unsafe shared mutators, and wrong modes
 before it touches Orca.
 
