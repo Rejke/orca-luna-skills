@@ -101,8 +101,12 @@ planreviewer checks both.
 
 Create the manifest and the receipt directory outside the repository. Put shared
 facts once into `envelope`: goal, non-goals, `AC<number>` definitions, constraints,
-base/dirty anchor, integration destination, repair budget, and — for any wave with
-mutators — `reviewedAnchor` or `reviewOverride`. Each worker lists AC IDs; it does
+integration destination, repair budget, and — for any wave with
+mutators — `reviewedAnchor` or `reviewOverride`. Do not hand-copy git output into
+the manifest: preflight measures HEAD and the dirty state itself and stores them
+as `gitBaseline` in `preflight.json`; finalize compares that measurement to the
+end state. `baseAnchor` is optional — when present, preflight fails fast if it
+does not equal the measured HEAD. Each worker lists AC IDs; it does
 not copy their text. Optional `envelope.knownFailureModes` holds learned rules from
 the feedback skill's `rules` command; the helper enforces the size caps and renders
 them as a KNOWN FAILURE MODES section. The helper rejects unknown fields, duplicate
@@ -269,10 +273,21 @@ uv run --no-project <skill>/scripts/orca_luna_worker.py finalize-wave \
 `finalize-wave` checks: preflight passed, every worker spawned, every worker settled
 (`done` or `failed`), every report valid, no open questions, no pending wake, every
 spawn command equal to its launch spec, no ambiguous effects, and — when it can
-check this itself — that a read-only wave left `current` unchanged. When every
-check passes, it closes the worker terminals. It writes
-`final.json` and returns `ready_for_sol_gate` only when all of that holds. For waves
-that changed files or used several worktrees, Sol must check the integration anchor.
+check this itself — that a read-only wave left `current` exactly at preflight's
+measured `gitBaseline`. When every check passes, it closes the worker terminals.
+It writes `final.json` and returns `ready_for_sol_gate` only when all of that
+holds. For waves that changed files or used several worktrees, Sol must check the
+integration anchor.
+
+Finalize also writes `usage.json`: per-worker token usage read from the agents'
+own session logs (codex rollout files, claude transcripts), with wall seconds,
+launch, service tier, and quota percent. Each worker also gets one line in this
+skill's `log/usage.jsonl` for cross-wave analytics. To collect on demand:
+
+```text
+uv run --no-project <skill>/scripts/orca_luna_worker.py usage \
+  --receipt-dir /tmp/<wave>-receipts
+```
 
 ## Stop and resume
 

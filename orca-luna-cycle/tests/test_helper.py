@@ -566,5 +566,275 @@ class ContractTests(unittest.TestCase):
         self.assertFalse(helper.exact_launch_proven(record))
 
 
+class AnchorBaselineTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory(prefix="orca-luna-anchor-")
+        self.directory = Path(self.temporary.name)
+        self.manifest = {
+            "envelope": {},
+            "workers": [{"worktree": "current"}],
+        }
+        self.state = {"workers": [{"mutation": "forbidden"}]}
+        self.baseline = {
+            "status": "captured",
+            "head": "abc123",
+            "dirtyState": [" M skills-lock.json", "?? notes.md"],
+        }
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
+
+    def write_preflight(self, baseline: dict[str, object] | None) -> None:
+        receipt: dict[str, object] = {"status": "passed"}
+        if baseline is not None:
+            receipt["gitBaseline"] = baseline
+        helper.save_json(self.directory / "preflight.json", receipt)
+
+    def test_measured_baseline_preserved_passes_without_manifest_anchor(self) -> None:
+        self.write_preflight(self.baseline)
+        with patch.object(helper, "git_snapshot", return_value=dict(self.baseline)):
+            result = helper.anchor_check(self.directory, self.manifest, self.state)
+        self.assertTrue(result["passed"])
+        self.assertEqual(result["status"], "verified")
+
+    def test_measured_baseline_detects_dirty_drift(self) -> None:
+        self.write_preflight(self.baseline)
+        drifted = dict(self.baseline, dirtyState=[" M skills-lock.json"])
+        with patch.object(helper, "git_snapshot", return_value=drifted):
+            result = helper.anchor_check(self.directory, self.manifest, self.state)
+        self.assertFalse(result["passed"])
+        self.assertEqual(result["status"], "changed")
+
+    def test_legacy_wave_without_baseline_uses_declared_anchor(self) -> None:
+        self.write_preflight(None)
+        manifest = {
+            "envelope": {"baseAnchor": "abc123", "dirtyState": []},
+            "workers": [{"worktree": "current"}],
+        }
+        snapshot = {"status": "captured", "head": "abc123", "dirtyState": []}
+        with patch.object(helper, "git_snapshot", return_value=snapshot):
+            result = helper.anchor_check(self.directory, manifest, self.state)
+        self.assertTrue(result["passed"])
+
+
+class UsageTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory(prefix="orca-luna-usage-")
+        self.root = Path(self.temporary.name)
+        self.directory = self.root / "receipts"
+        (self.directory / "terminals").mkdir(parents=True)
+        self.worktree = "/home/user/project"
+        self.now = 1_800_000_000.0
+        helper.save_json(
+            self.directory / "terminals" / "w1.json",
+            {
+                "result": {
+                    "terminal": {
+                        "handle": "term_w1",
+                        "worktreeId": "id-1::\\\\wsl.localhost\\Debian\\home\\user\\project",
+                    }
+                }
+            },
+        )
+        os.utime(
+            self.directory / "terminals" / "w1.json", (self.now - 50, self.now - 50)
+        )
+        self.state = {
+            "created_at": self.now - 60,
+            "workers": [
+                {
+                    "index": 1,
+                    "worker_id": "w1",
+                    "role": "implementer",
+                    "launch": "luna-max",
+                    "started_at": self.now - 40,
+                    "settled_at": self.now + 100,
+                }
+            ],
+        }
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
+
+    def iso(self, stamp: float) -> str:
+        import datetime as dt
+
+        return (
+            dt.datetime.fromtimestamp(stamp, tz=dt.timezone.utc)
+            .isoformat()
+            .replace("+00:00", "Z")
+        )
+
+    def write_rollout(self, cwd: str, started: float) -> Path:
+        day = self.root / "codex-sessions" / "2026" / "08" / "19"
+        day.mkdir(parents=True, exist_ok=True)
+        path = day / f"rollout-x-{started:.0f}-{abs(hash(cwd)) % 10_000}.jsonl"
+        lines = [
+            {
+                "type": "session_meta",
+                "payload": {"cwd": cwd, "timestamp": self.iso(started)},
+            },
+            {
+                "type": "turn_context",
+                "payload": {
+                    "model": "gpt-5.6-luna",
+                    "collaboration_mode": {
+                        "settings": {"reasoning_effort": "max"}
+                    },
+                },
+            },
+            {
+                "type": "event_msg",
+                "payload": {
+                    "type": "token_count",
+                    "info": {
+                        "total_token_usage": {
+                            "input_tokens": 1000,
+                            "cached_input_tokens": 600,
+                            "cache_write_input_tokens": 0,
+                            "output_tokens": 200,
+                            "reasoning_output_tokens": 150,
+                            "total_tokens": 1200,
+                        }
+                    },
+                    "rate_limits": {
+                        "plan_type": "pro",
+                        "primary": {"used_percent": 42.5},
+                    },
+                },
+            },
+        ]
+        path.write_text(
+            "\n".join(json.dumps(line) for line in lines) + "\n", encoding="utf-8"
+        )
+        os.utime(path, (started, started))
+        return path
+
+    def test_worktree_id_path_converts_wsl_unc(self) -> None:
+        self.assertEqual(
+            helper.worktree_id_path(
+                "id::\\\\wsl.localhost\\Debian\\home\\user\\project"
+            ),
+            "/home/user/project",
+        )
+        self.assertEqual(helper.worktree_id_path("id::/home/user/x"), "/home/user/x")
+        self.assertIsNone(helper.worktree_id_path("no-separator"))
+
+    def test_codex_session_matched_by_cwd_and_window(self) -> None:
+        self.write_rollout(self.worktree, self.now - 45)
+        self.write_rollout("/other/project", self.now - 45)
+        usage = helper.wave_usage(
+            self.directory,
+            self.state,
+            codex_roots=[self.root / "codex-sessions"],
+            claude_root=self.root / "claude-missing",
+            now=self.now + 200,
+        )
+        row = usage["workers"][0]
+        self.assertEqual(row["match"], "exact")
+        self.assertEqual(row["tokens"]["total"], 1200)
+        self.assertEqual(row["tokens"]["output"], 200)
+        self.assertEqual(row["model"], "gpt-5.6-luna")
+        self.assertEqual(row["effort"], "max")
+        self.assertEqual(row["serviceTier"], "standard")
+        self.assertEqual(row["quota"]["endPercent"], 42.5)
+        self.assertEqual(row["wallSeconds"], 140)
+        self.assertEqual(usage["byLaunch"]["luna-max"]["totalTokens"], 1200)
+
+    def test_session_outside_window_stays_unmatched(self) -> None:
+        self.write_rollout(self.worktree, self.now - 3000)
+        usage = helper.wave_usage(
+            self.directory,
+            self.state,
+            codex_roots=[self.root / "codex-sessions"],
+            claude_root=self.root / "claude-missing",
+            now=self.now + 200,
+        )
+        self.assertEqual(usage["workers"][0]["match"], "none")
+        self.assertIsNone(usage["workers"][0]["tokens"])
+
+    def test_claude_session_sums_request_usage(self) -> None:
+        state = {
+            "created_at": self.now - 60,
+            "workers": [
+                {
+                    "index": 1,
+                    "worker_id": "w1",
+                    "role": "implementer",
+                    "launch": "fable-high",
+                    "started_at": self.now - 40,
+                    "settled_at": self.now + 100,
+                }
+            ],
+        }
+        project = self.root / "claude-projects" / "-home-user-project"
+        project.mkdir(parents=True)
+        lines = [
+            {
+                "type": "user",
+                "cwd": self.worktree,
+                "timestamp": self.iso(self.now - 30),
+            },
+            {
+                "type": "assistant",
+                "timestamp": self.iso(self.now - 20),
+                "message": {
+                    "model": "claude-fable-5",
+                    "usage": {
+                        "input_tokens": 100,
+                        "cache_read_input_tokens": 50,
+                        "cache_creation_input_tokens": 10,
+                        "output_tokens": 20,
+                    },
+                },
+            },
+            {
+                "type": "assistant",
+                "timestamp": self.iso(self.now - 10),
+                "message": {
+                    "model": "claude-fable-5",
+                    "usage": {
+                        "input_tokens": 200,
+                        "cache_read_input_tokens": 150,
+                        "cache_creation_input_tokens": 0,
+                        "output_tokens": 40,
+                    },
+                },
+            },
+        ]
+        (project / "session.jsonl").write_text(
+            "\n".join(json.dumps(line) for line in lines) + "\n", encoding="utf-8"
+        )
+        os.utime(project / "session.jsonl", (self.now, self.now))
+        usage = helper.wave_usage(
+            self.directory,
+            state,
+            codex_roots=[self.root / "codex-missing"],
+            claude_root=self.root / "claude-projects",
+            now=self.now + 200,
+        )
+        row = usage["workers"][0]
+        self.assertEqual(row["match"], "exact")
+        self.assertEqual(row["tokens"]["total"], 570)
+        self.assertEqual(row["tokens"]["output"], 60)
+        self.assertEqual(row["model"], "claude-fable-5")
+
+    def test_usage_log_appends_each_worker_once(self) -> None:
+        self.write_rollout(self.worktree, self.now - 45)
+        usage = helper.wave_usage(
+            self.directory,
+            self.state,
+            codex_roots=[self.root / "codex-sessions"],
+            claude_root=self.root / "claude-missing",
+            now=self.now + 200,
+        )
+        log_path = self.root / "log" / "usage.jsonl"
+        self.assertEqual(helper.append_usage_log(usage, log_path), 1)
+        self.assertEqual(helper.append_usage_log(usage, log_path), 0)
+        entry = json.loads(log_path.read_text(encoding="utf-8").splitlines()[0])
+        self.assertEqual(entry["workerId"], "w1")
+        self.assertEqual(entry["runId"], "receipts")
+
+
 if __name__ == "__main__":
     unittest.main()
