@@ -22,9 +22,9 @@ their prompt from a file and write their report to a file.
 ## Rules
 
 - The controller is `gpt-5.6-sol` at `xhigh`. Each worker starts fresh with the exact
-  model and effort from its launch spec (see Launch policy). Reviewer and anti-slop
-  workers always run `gpt-5.6-sol` at `xhigh`. Never swap in a weaker model or effort
-  without telling the user.
+  model and effort from its launch spec (see Launch policy). Review workers
+  (reviewer, anti-slop, plan-review) always run `gpt-5.6-sol` at `xhigh`. Never swap
+  in a weaker model or effort without telling the user.
 - At most 10 workers at the same time. Start a fresh session for every role change,
   fixer, and re-review.
 - Workers never start other workers, never load this skill, never widen their own
@@ -50,9 +50,9 @@ their prompt from a file and write their report to a file.
   runs `collect-reports` only after a ping. Never watch terminals in a loop.
 - Preflight copies the helper into `<receipts>/runtime/helper.py` and stores its
   SHA-256 in the journal. Every later command for that wave (collect, answer, notify,
-  stop, resume, finalize) runs that copy; the worker's wake command already points to
-  it. The live helper refuses a wave
-  from a different build and prints the path of the copy.
+  stop, resume, finalize) runs that copy; the worker's wake command already points
+  to it. The live helper refuses a wave from a different build and prints the path
+  of the copy.
 
 ## Choose mode and swarm size
 
@@ -90,18 +90,6 @@ PATH.
 
 ## Build manifest v2
 
-Create the manifest and the receipt directory outside the repository. Put shared
-facts once into `envelope`: goal, non-goals, `AC<number>` definitions, constraints,
-base/dirty anchor, integration destination, repair budget, and — for any wave with
-mutators — `reviewedAnchor` or `reviewOverride`. Each worker lists AC IDs; it does
-not copy their text. The helper rejects unknown fields, duplicate worker IDs or
-worktree names, unknown ACs, unsafe shared mutators, and wrong modes before it
-touches Orca.
-
-Optional `envelope.knownFailureModes`: learned rules from the feedback skill's
-`rules` command; the helper enforces the size caps. The renderer adds them to
-every worker prompt as a KNOWN FAILURE MODES section.
-
 The plan has two floors. `envelope.goal` is the product mission: the user-facing
 outcome and who it serves — it renders as MISSION in every worker prompt.
 Acceptance criteria are the technical contract derived from that mission. Example:
@@ -111,16 +99,43 @@ changes with a breaking flag". A criterion you cannot trace to the mission is
 scope creep; a part of the mission no criterion covers is a gap — the
 planreviewer checks both.
 
+Create the manifest and the receipt directory outside the repository. Put shared
+facts once into `envelope`: goal, non-goals, `AC<number>` definitions, constraints,
+base/dirty anchor, integration destination, repair budget, and — for any wave with
+mutators — `reviewedAnchor` or `reviewOverride`. Each worker lists AC IDs; it does
+not copy their text. Optional `envelope.knownFailureModes` holds learned rules from
+the feedback skill's `rules` command; the helper enforces the size caps and renders
+them as a KNOWN FAILURE MODES section. The helper rejects unknown fields, duplicate
+worker IDs or worktree names, unknown ACs, unsafe shared mutators, and wrong modes
+before it touches Orca.
+
 Keep the manifest lean. The rendered prompt already carries the role charter, the
-report contract, the verdict rules, and the learning arrays — do not restate any of
-them in acceptance criteria, constraints, or checks. One acceptance criterion is one testable
-statement, not a paragraph. To protect earlier work, write one line — "Preserve
-all behavior accepted at <reviewedAnchor>" — instead of listing past wins. FINDINGS is the canonical list: refer to
-findings by number in acceptance criteria and checks ("AC1: finding 1 is
-root-cause fixed with a production-entrypoint regression test"); do not retell a
-finding's content there, and do not repeat the owned file list outside SCOPE and
-OWNERSHIP. Aim for under 6000 characters per worker spec; preflight and
-`--dry-run` flag any spec over 8000.
+report contract, the verdict rules, and the learning arrays — do not restate any
+of them in acceptance criteria, constraints, or checks. One acceptance criterion
+is one testable statement, not a paragraph. To protect earlier work, write one
+line — "Preserve all behavior accepted at <reviewedAnchor>" — instead of listing
+past wins. FINDINGS is the canonical list: refer to findings by number ("AC1:
+finding 1 is root-cause fixed with a production-entrypoint regression test"), and
+do not repeat the owned file list outside SCOPE and OWNERSHIP. Aim for under 6000
+characters per worker spec; preflight and `--dry-run` flag any spec over 8000.
+
+Roles are `scout`, `implementer`, `integrator`, `reviewer`, `antislop`,
+`planreviewer`, and `fixer`. The optional worker field `launch` picks a spec from
+the Launch policy. In a review wave, give every commit range between the reviewed
+diff and `baseAnchor` to a named reviewer. Use `displayName` for a short tab
+title; otherwise the helper builds one from the worktree `name` or the goal, with
+index and role in front.
+
+The helper renders a full built-in charter for every reviewer, anti-slop, and
+plan-review worker: defect focus areas, generated-code checks, the seven anti-slop
+angles, and the plan categories. The manifest adds only lens, scope, and criteria
+— do not copy charter text into the manifest.
+
+Before dispatching mutators on a new or complex envelope, run one audit wave
+first: print the authored plan with `plan-brief --manifest <wave>.json` into a
+file, and give a single `planreviewer` that file (plus any spec documents) as its
+scope. Fix the envelope from the findings, then dispatch. Skip this for small
+waves with proven criteria.
 
 Print the JSON Schema and a valid example; do not read the helper source:
 
@@ -134,26 +149,6 @@ Print one generated worker prompt without contacting Orca:
 uv run --no-project <skill>/scripts/orca_luna_worker.py prompt \
   --manifest /tmp/<wave>.json --worker <worker-id>
 ```
-
-Roles are `scout`, `implementer`, `integrator`, `reviewer`, `antislop`,
-`planreviewer`, and `fixer`.
-
-Before dispatching mutators on a new or complex envelope, run one audit wave
-first: print the authored plan with `plan-brief --manifest <wave>.json` into a
-file, and give a single `planreviewer` that file (plus any spec documents) as its
-scope. Mechanical manifest fields stay out of the brief; the helper validates
-them. Fix the envelope from the findings, then dispatch. Skip this for small
-waves with proven criteria.
-The optional `launch` field picks a spec from the Launch policy; review roles reject
-overrides. In a review wave, give every commit range between the reviewed diff and
-`baseAnchor` to a named reviewer. Use `displayName` for a short
-tab title; otherwise the helper builds one from the worktree `name` or the goal, with
-index and role in front.
-
-The helper renders a full built-in charter for every reviewer and anti-slop worker:
-defect focus areas, generated-code checks, and the
-seven anti-slop angles. The manifest adds only lens, scope, and criteria — do not
-copy charter text into the manifest.
 
 ## Preflight: required, changes nothing
 
@@ -192,11 +187,12 @@ uv run --no-project <skill>/scripts/orca_luna_worker.py dispatch-wave \
 ```
 
 For each worker the helper: creates the worktree when the manifest asks for one
-(`worktree create` with the worker's required `baseBranch` and setup); creates a visible Orca terminal tab that starts the
-agent with the exact spawn command (`terminal create --command`); waits for the
-agent to reach idle; captures the boot banner as launch evidence; writes the full
-prompt to `prompts/<worker>.txt`; and sends the terminal one short line — "Read the
-file <path> and do exactly what it says." `receipt-dir` is the only journal and the only resume handle:
+(`worktree create` with the worker's required `baseBranch` and setup); creates a
+visible Orca terminal tab that starts the agent with the exact spawn command;
+waits for the agent to reach idle; captures the boot banner as launch evidence;
+writes the full prompt to `prompts/<worker>.txt`; and sends the terminal one short
+line — "Read the file <path> and do exactly what it says." `receipt-dir` is the
+only journal and the only resume handle:
 
 ```text
 preflight.json
@@ -237,9 +233,8 @@ Collect reads every new or changed report file, validates it against schema v1,
 stores the accepted copy in `reports/`, and updates the wave state. It never waits.
 A report from a worker that already finished never replaces the accepted copy; the
 change is surfaced instead (`changedAfterDone`). A valid rewrite may replace an
-invalid report. `taskStatus` values: `done` and `failed` settle the worker; a
-reviewer's `FAIL` verdict is a statement about the code, and `failed` means the job
-itself failed.
+invalid report. `taskStatus` values: `done` and `failed` settle the worker;
+`failed` means the job itself failed, which a `FAIL` verdict is not.
 
 Follow the `next` field. `action_required` lists invalid reports, failures,
 material verdicts, and questions. Handle them, then return to idle until the next
@@ -251,7 +246,9 @@ re-engage a marked worker with `terminal send` or stop the wave.
 ## Questions: blocked workers stay warm
 
 A worker that truly needs a decision writes a report with `taskStatus: "blocked"`
-and a one-sentence `question` field, pings, and stays idle in its terminal. Write your answer to a file with the Write tool, then:
+and a one-sentence `question` field, pings, and stays idle in its terminal.
+
+Write your answer to a file with the Write tool, then:
 
 ```text
 uv run --no-project <skill>/scripts/orca_luna_worker.py answer \
@@ -260,8 +257,7 @@ uv run --no-project <skill>/scripts/orca_luna_worker.py answer \
 
 The helper sends the worker one short line pointing at the answer file. The worker
 continues the same task and writes its final report, which replaces the blocked
-one. Workers have no other
-question channel.
+one. Workers have no other question channel.
 
 ## Finalize before Sol's verdict
 
