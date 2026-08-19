@@ -1,14 +1,12 @@
 ---
 name: orca-luna-cycle
 description: >-
-  Run up to 10 worker agents in Orca terminals under one GPT-5.6 Sol xhigh
-  controller. Each role has a fixed model: Luna max writes backend code and
-  business logic, Claude Fable 5 high builds frontend UI, and Sol xhigh
-  reviews every change. A Python helper spawns the workers itself, gives each
-  a prompt file, collects report files, and writes every step to the receipt
-  journal. Use for parallel implementation in Orca worktrees, independent
-  audits or benchmarks, anti-slop review, and repair/re-review loops. Do not
-  use for an unsupervised full handoff.
+  Run up to 10 worker agents in Orca worktrees under one GPT-5.6 Sol xhigh
+  controller, with a fixed model per role (Luna max backend, Claude Fable 5
+  high frontend UI, Sol xhigh all review). Use for parallel implementation,
+  plan review before implementation, independent audits or benchmarks,
+  anti-slop review, and repair/re-review loops. Not for an unsupervised full
+  handoff.
 ---
 
 # Orca Luna Cycle
@@ -22,8 +20,7 @@ their prompt from a file and write their report to a file.
 ## Rules
 
 - The controller is `gpt-5.6-sol` at `xhigh`. Each worker starts fresh with the exact
-  model and effort from its launch spec (see Launch policy). Review workers
-  (reviewer, anti-slop, plan-review) always run `gpt-5.6-sol` at `xhigh`. Never swap
+  model and effort from its launch spec (see Launch policy). Never swap
   in a weaker model or effort without telling the user.
 - At most 10 workers at the same time. Start a fresh session for every role change,
   fixer, and re-review.
@@ -51,8 +48,7 @@ their prompt from a file and write their report to a file.
 - Preflight copies the helper into `<receipts>/runtime/helper.py` and stores its
   SHA-256 in the journal. Every later command for that wave (collect, answer, notify,
   stop, resume, finalize) runs that copy; the worker's wake command already points
-  to it. The live helper refuses a wave from a different build and prints the path
-  of the copy.
+  to it. The live helper refuses a wave from a different build.
 
 ## Choose mode and swarm size
 
